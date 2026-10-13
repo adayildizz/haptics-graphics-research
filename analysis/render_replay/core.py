@@ -1,0 +1,243 @@
+"""Simulate the render modes on a sampled path and compare their switches with the true edge crossings."""
+
+# Uses experiment.render_logic only: the same decision code the trial loop runs, nothing else from the package.
+
+from __future__ import annotations
+
+import bisect
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from experiment import render_logic as rl
+from experiment.render_logic import Rect, Sample
+
+MATCH_WINDOW_S = 0.1
+
+
+@dataclass(frozen=True)
+class Params:
+    window: int = 3
+    horizon_factor: float = 1.5
+    horizon_max_ms: float = 25.0
+    min_speed_mm_s: float = 5.0
+    latency_ms: float = 0.0
+    nominal_interval_s: float = 1.0 / 60.0
+    position_quantum_mm: float = 0.2
+
+
+@dataclass(frozen=True)
+class Inside:
+    """One stretch of the true path inside a bar; a missing end means the recording starts or stops there."""
+
+    bar: str
+    enter: rl.EdgeCrossing | None
+    exit: rl.EdgeCrossing | None
+
+
+@dataclass(frozen=True)
+class EdgeError:
+    """How far past an edge the finger was when the mode switched (+ late, - early), in mm."""
+
+    mode: str
+    bar: str
+    edge: str
+    entering: bool
+    t_true_s: float
+    late_mm: float
+    late_ms: float
+    bridged: bool = False  # the signal never switched off before the finger came back in
+
+    @property
+    def category(self) -> str:
+        if self.edge == "top":
+            return "top edge, downward entry" if self.entering else "top edge, upward exit"
+        side = "side" if self.edge in ("left", "right") else "bottom"
+        return f"{side} edge, {'entry' if self.entering else 'exit'}"
+
+    @property
+    def height_effect_mm(self) -> float | None:
+        """Top edge only: + means the bar feels taller than it is, - shorter."""
+        if self.edge != "top":
+            return None
+        return -self.late_mm if self.entering else self.late_mm
+
+
+@dataclass(frozen=True)
+class Outcome:
+    errors: list[EdgeError]
+    missed: int  # stretches inside a bar during which the mode never had the signal on
+    spurious_ms: float  # signal on with the finger nowhere near the inside of a bar
+
+
+def planner_for(mode: str, nominal: Sequence[Rect], pixel: Sequence[Rect] | None, bar_width_mm: float, params: Params):
+    if mode == "predictive":
+        return rl.PredictivePlanner(
+            nominal,
+            window=params.window,
+            horizon_factor=params.horizon_factor,
+            horizon_max_s=params.horizon_max_ms / 1000.0,
+            min_speed_mm_s=params.min_speed_mm_s,
+            latency_s=params.latency_ms / 1000.0,
+            nominal_interval_s=params.nominal_interval_s,
+            position_quantum_mm=params.position_quantum_mm,
+        )
+    if mode == "position":
+        return rl.PositionPlanner(nominal)
+    if mode == "timed_legacy":
+        # The legacy rule tests the pixel-rounded rectangles; fall back to nominal when they are unknown.
+        return rl.LegacyPlanner(pixel or nominal, bar_width_mm)
+    raise ValueError(f"unknown render mode {mode!r}")
+
+
+def simulate(planner, samples: Sequence[Sample]) -> list[tuple[float, bool]]:
+    """(time, on) switches an ideal scheduler would execute: each plan's state, then its transitions until the next plan."""
+    on = False
+    switches: list[tuple[float, bool]] = []
+    plans = [planner.plan(sample) for sample in samples]
+    for index, plan in enumerate(plans):
+        if plan.on != on:
+            on = plan.on
+            switches.append((plan.t_s, on))
+        next_t = plans[index + 1].t_s if index + 1 < len(plans) else float("inf")
+        for transition in plan.transitions:
+            if transition.t_s >= next_t:
+                break
+            if transition.on != on:
+                on = transition.on
+                switches.append((transition.t_s, on))
+    return switches
+
+
+def on_intervals(switches: Sequence[tuple[float, bool]], end_s: float) -> list[tuple[float, float]]:
+    intervals: list[tuple[float, float]] = []
+    start: float | None = None
+    for t_s, on in switches:
+        if on and start is None:
+            start = t_s
+        elif not on and start is not None:
+            intervals.append((start, t_s))
+            start = None
+    if start is not None:
+        intervals.append((start, end_s))
+    return intervals
+
+
+def true_insides(truth: Sequence[Sample], bars: Sequence[Rect]) -> list[Inside]:
+    """Every visit of the true path to a bar, from the edge it came in by to the edge it left by."""
+    open_visits: dict[str, rl.EdgeCrossing | None] = {}
+    start_bar = rl.side_at(bars, truth[0].x_mm, truth[0].y_mm)
+    if start_bar is not None:
+        open_visits[start_bar] = None
+    visits: list[Inside] = []
+    for previous, current in zip(truth, truth[1:]):
+        for crossing in rl.crossings_between(previous, current, bars):
+            if crossing.entering:
+                open_visits[crossing.bar] = crossing
+            elif crossing.bar in open_visits:
+                visits.append(Inside(crossing.bar, open_visits.pop(crossing.bar), crossing))
+    visits.extend(Inside(bar, enter, None) for bar, enter in open_visits.items())
+    return sorted(visits, key=lambda visit: visit.enter.t_s if visit.enter else truth[0].t_s)
+
+
+class Path:
+    """The true finger path, linearly interpolated between its samples."""
+
+    def __init__(self, samples: Sequence[Sample]) -> None:
+        self.samples = samples
+        self._times = [sample.t_s for sample in samples]
+
+    def at(self, t_s: float) -> tuple[float, float]:
+        index = min(max(bisect.bisect_right(self._times, t_s), 1), len(self.samples) - 1)
+        a, b = self.samples[index - 1], self.samples[index]
+        fraction = 0.0 if b.t_s == a.t_s else min(max((t_s - a.t_s) / (b.t_s - a.t_s), 0.0), 1.0)
+        return a.x_mm + fraction * (b.x_mm - a.x_mm), a.y_mm + fraction * (b.y_mm - a.y_mm)
+
+    def furthest_outside(self, t0_s: float, t1_s: float, bar: Rect, edge: str) -> float:
+        """Largest distance beyond ``edge`` reached between two instants."""
+        lo, hi = bisect.bisect_left(self._times, t0_s), bisect.bisect_right(self._times, t1_s)
+        points = [self.at(t0_s), *((s.x_mm, s.y_mm) for s in self.samples[lo:hi]), self.at(t1_s)]
+        return max(_beyond(x, y, bar, edge, entering=False) for x, y in points)
+
+
+def _beyond(x: float, y: float, bar: Rect, edge: str, *, entering: bool) -> float:
+    """Distance past ``edge`` in the direction of travel: into the bar when entering, away from it when leaving."""
+    inward = {"left": x - bar.x0, "right": bar.x1 - x, "top": y - bar.y_top, "bottom": bar.y_bottom - y}[edge]
+    return inward if entering else -inward
+
+
+def _span(visit: Inside, start_s: float, end_s: float) -> tuple[float, float]:
+    return (visit.enter.t_s if visit.enter else start_s), (visit.exit.t_s if visit.exit else end_s)
+
+
+def _match(spans: Sequence[tuple[float, float]], intervals: Sequence[tuple[float, float]]) -> list[int | None]:
+    """For each true visit, the on-interval that covers it best, or a free one within the match window."""
+    overlaps = [[min(b, t_out) - max(a, t_in) for a, b in intervals] for t_in, t_out in spans]
+    covering = {i for row in overlaps for i, overlap in enumerate(row) if overlap > 0}
+    matches: list[int | None] = []
+    for row in overlaps:
+        best = max(range(len(row)), key=row.__getitem__, default=None)
+        if best is None or row[best] <= 0:
+            near = [i for i, overlap in enumerate(row) if overlap > -MATCH_WINDOW_S and i not in covering]
+            best = max(near, key=row.__getitem__, default=None)
+        matches.append(best)
+    return matches
+
+
+def evaluate(
+    mode: str, switches: Sequence[tuple[float, bool]], truth: Sequence[Sample], bars: Sequence[Rect]
+) -> Outcome:
+    """Match each true visit to the mode's on-interval and measure the entry and exit errors."""
+    path = Path(truth)
+    by_name = {bar.name: bar for bar in bars}
+    start_s, end_s = truth[0].t_s, truth[-1].t_s
+    intervals = on_intervals(switches, end_s)
+    visits = true_insides(truth, bars)
+    spans = [_span(visit, start_s, end_s) for visit in visits]
+    matches = _match(spans, intervals)
+    errors: list[EdgeError] = []
+    for index, (visit, matched) in enumerate(zip(visits, matches)):
+        if matched is None:
+            continue
+        on_s, off_s = intervals[matched]
+        bar = by_name[visit.bar]
+        t_in, t_out = spans[index]
+        # An on-interval shared with a neighbouring visit means the signal stayed on in between.
+        shared_before = index > 0 and matches[index - 1] == matched
+        shared_after = index + 1 < len(visits) and matches[index + 1] == matched
+        if visit.enter is not None and not shared_before:
+            late = _beyond(*path.at(on_s), bar, visit.enter.edge, entering=True)
+            errors.append(EdgeError(mode, visit.bar, visit.enter.edge, True, t_in, late, 1000.0 * (on_s - t_in)))
+        if visit.exit is None:
+            continue
+        if shared_after or off_s >= end_s:
+            # Still on when the finger came back in, or when the recording ended: report how far out it got.
+            until_s = spans[index + 1][0] if shared_after else end_s
+            reach = path.furthest_outside(t_out, until_s, bar, visit.exit.edge)
+            outside_ms = 1000.0 * (until_s - t_out)
+            errors.append(EdgeError(mode, visit.bar, visit.exit.edge, False, t_out, reach, outside_ms, bridged=True))
+        else:
+            # Late: the furthest the finger got with the signal still on. Early: how far inside it still was.
+            late = (
+                path.furthest_outside(t_out, off_s, bar, visit.exit.edge)
+                if off_s > t_out
+                else _beyond(*path.at(off_s), bar, visit.exit.edge, entering=False)
+            )
+            errors.append(EdgeError(mode, visit.bar, visit.exit.edge, False, t_out, late, 1000.0 * (off_s - t_out)))
+    used = {matched for matched in matches if matched is not None}
+    spurious_ms = 1000.0 * sum(b - a for i, (a, b) in enumerate(intervals) if i not in used)
+    return Outcome(errors, sum(matched is None for matched in matches), spurious_ms)
+
+
+def replay(
+    samples: Sequence[Sample],
+    nominal: Sequence[Rect],
+    pixel: Sequence[Rect] | None,
+    bar_width_mm: float,
+    params: Params,
+    truth: Sequence[Sample] | None = None,
+) -> dict[str, Outcome]:
+    """All three modes on one trial; ``truth`` defaults to the samples themselves, joined by straight lines."""
+    return {
+        mode: evaluate(mode, simulate(planner_for(mode, nominal, pixel, bar_width_mm, params), samples), truth or samples, nominal)
+        for mode in rl.RENDER_MODES
+    }
