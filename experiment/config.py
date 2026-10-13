@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from .render_logic import RENDER_MODES
+
 # --- Hardware (signal generator) ---
 CARRIER_FREQUENCY = 125       # Hz
 PEAK_VOLTAGE = 4.0            # Vpp, before external amplification
@@ -91,7 +93,16 @@ class ExperimentConfig:
     # Display
     blind_test_mode: bool = False  # hide the bars/columns entirely; find them by touch only
 
-    # Rendering / hardware
+    # Rendering (README: Rendering Method)
+    render_mode: str = "predictive"  # "predictive" | "position" | "timed_legacy"
+    predict_window_samples: int = 3
+    predict_horizon_factor: float = 1.5  # x the measured median sample interval
+    predict_horizon_max_ms: float = 25.0
+    predict_min_speed_mm_s: float = 5.0
+    latency_compensation_ms: float = 0.0
+    signal_watchdog_ms: float = 100.0
+
+    # Hardware
     carrier_freq_hz: float = 125.0
     voltage_peak: float = 4.0
     ir_sample_hz_nominal: float = 100.0
@@ -139,6 +150,16 @@ class ExperimentConfig:
             raise ValueError("practice_pass_fraction must be between 0 and 1")
         if not 0 <= self.masking_noise_volume <= 1:
             raise ValueError("masking_noise_volume must be between 0 and 1")
+        if self.render_mode not in RENDER_MODES:
+            raise ValueError(f"render_mode must be one of {RENDER_MODES}, got {self.render_mode!r}")
+        if self.predict_window_samples < 2:
+            raise ValueError("predict_window_samples must be >= 2")
+        if self.predict_horizon_factor <= 0 or self.predict_horizon_max_ms <= 0:
+            raise ValueError("predict_horizon_factor and predict_horizon_max_ms must be > 0")
+        if self.predict_min_speed_mm_s < 0 or self.latency_compensation_ms < 0:
+            raise ValueError("predict_min_speed_mm_s and latency_compensation_ms must be >= 0")
+        if self.signal_watchdog_ms <= 0:
+            raise ValueError("signal_watchdog_ms must be > 0")
         if self.dominant_hand not in ("", "left", "right"):
             raise ValueError("dominant_hand must be 'left', 'right', or empty")
         if self.mode not in ("constant_stimuli", "staircase_pilot"):

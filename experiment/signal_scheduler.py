@@ -88,6 +88,7 @@ class SignalScheduler:
         self._clock = clock
         self._cond = threading.Condition()
         self._generation = 0
+        self._applied = 0
         self._new_plan: Plan | None = None
         self._plan: Plan | None = None
         self._pending: list[Transition] = []
@@ -130,6 +131,11 @@ class SignalScheduler:
             self._last_plan_s = self._clock()
             self._generation += 1
             self._cond.notify()
+
+    def flush(self, timeout_s: float = 1.0) -> bool:
+        """Wait until the latest submitted plan's state has been written; True if it has."""
+        with self._cond:
+            return self._cond.wait_for(lambda: self._applied == self._generation or self._closing, timeout_s)
 
     def stop_trial(self, reason: str = "trial_end", timeout_s: float = 1.0) -> list[WriteRecord]:
         """Switch off, drop the plan, wait until that is done, and hand back every write not yet collected."""
@@ -213,6 +219,10 @@ class SignalScheduler:
         elif plan is not None:
             if plan.on != self._on:
                 self._write(plan.on, "plan", plan.t_s, plan, plan.bar, plan.edge)
+        if stop_reason is not None or plan is not None:
+            with self._cond:
+                self._applied = generation
+                self._cond.notify_all()
         elif action == "transition":
             self._run_transition(generation, due_s)
         elif action == "watchdog":

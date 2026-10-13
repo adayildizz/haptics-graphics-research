@@ -267,7 +267,9 @@ def crossings_between(previous: Sample, current: Sample, bars: Sequence[Rect]) -
     return sorted(found, key=lambda crossing: crossing.t_s)
 
 
-def _label(previous: Sample | None, current: Sample, bars: Sequence[Rect], on: bool) -> tuple[str | None, str]:
+def explain_switch(
+    previous: Sample | None, current: Sample, bars: Sequence[Rect], on: bool
+) -> tuple[str | None, str]:
     """Which bar and edge explain the signal state at ``current``, judged from the step that led there."""
     bar = side_at(bars, current.x_mm, current.y_mm)
     if previous is None:
@@ -292,7 +294,7 @@ class PositionPlanner:
 
     def plan(self, sample: Sample) -> Plan:
         on = side_at(self.bars, sample.x_mm, sample.y_mm) is not None
-        bar, edge = _label(self._previous, sample, self.bars, on)
+        bar, edge = explain_switch(self._previous, sample, self.bars, on)
         self._previous = sample
         return Plan(sample.t_s, on, bar, edge, (), sample.x_mm, sample.y_mm)
 
@@ -349,7 +351,7 @@ class PredictivePlanner:
                 if 0.0 < exit_s <= horizon and exit_s > max(enter_s, 0.0):
                     transitions.append(Transition(sample.t_s + exit_s, False, bar.name, exit_edge))
             transitions.sort(key=lambda transition: transition.t_s)
-        bar_name, edge = _label(self._previous, here, self.bars, on)
+        bar_name, edge = explain_switch(self._previous, here, self.bars, on)
         self._previous = here
         return Plan(sample.t_s, on, bar_name, edge, tuple(transitions), sample.x_mm, sample.y_mm, vx, vy, horizon)
 
@@ -388,7 +390,7 @@ class LegacyPlanner:
         previous = self._previous or sample
         side = side_at(self.bars, sample.x_mm, sample.y_mm)
         on = self.timer.step(sample.t_s, side, two_point_speed(previous, sample))
-        bar, edge = _label(self._previous, sample, self.bars, on)
+        bar, edge = explain_switch(self._previous, sample, self.bars, on)
         if on and side is None:
             edge = "timer"
         self._previous = sample

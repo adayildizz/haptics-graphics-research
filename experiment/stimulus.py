@@ -152,17 +152,19 @@ def stimulus_duration(bar_width_mm: float, finger_speed_mm_s: float) -> float:
     return min(bar_width_mm / speed, MAX_SIGNAL_DURATION_S)
 
 
-def deliver_timed_signal(
-    instrument: Any | None,
-    start_time_s: float,
-    duration_s: float,
-    now_s: float | None = None,
-) -> bool:
-    """Set signal ON while the current time is inside the requested interval."""
-    current_time = time.perf_counter() if now_s is None else now_s
-    active = start_time_s <= current_time < start_time_s + duration_s
-    if active:
-        signal_on(instrument)
-    else:
-        signal_off(instrument)
-    return active
+class GeneratorDevice:
+    """The scheduler's handle on the generator. During a session nothing else may switch the output."""
+
+    def __init__(self, instrument: Any) -> None:
+        self._instrument = instrument
+
+    def on(self) -> None:
+        signal_on(self._instrument)
+
+    def off(self) -> None:
+        signal_off(self._instrument)
+
+
+def device_for(instrument: Any | None) -> GeneratorDevice | None:
+    """None without hardware, so the scheduler falls back to its no-op device."""
+    return None if instrument is None else GeneratorDevice(instrument)

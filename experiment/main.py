@@ -97,7 +97,7 @@ def wait_for_continue_or_exit(screen, message: str) -> bool:
 
 
 def run_staircase_pilot(
-    screen, clock, calibration, instrument, cfg: ExperimentConfig, summary_path: Path, seed: int
+    screen, clock, calibration, signal, cfg: ExperimentConfig, summary_path: Path, seed: int
 ) -> None:
     from . import trial as trial_module
 
@@ -122,7 +122,7 @@ def run_staircase_pilot(
             is_catch=False,
             is_practice=False,
         )
-        result = trial_module.run_trial(screen, clock, calibration, instrument, cfg, spec, trial_index, fps=60)
+        result = trial_module.run_trial(screen, clock, calibration, signal, cfg, spec, trial_index, fps=60)
         if isinstance(result, trial_module.TrialAborted):
             return
         if isinstance(result, trial_module.TrialTimeout):
@@ -234,7 +234,7 @@ def run_constant_stimuli(
     screen,
     clock,
     calibration,
-    instrument,
+    signal,
     cfg: ExperimentConfig,
     session_id: str,
     trial_path: Path,
@@ -309,7 +309,7 @@ def run_constant_stimuli(
                         screen,
                         clock,
                         calibration,
-                        instrument,
+                        signal,
                         cfg,
                         scheduled.spec,
                         shown,
@@ -398,7 +398,7 @@ def run_constant_stimuli(
             screen,
             clock,
             calibration,
-            instrument,
+            signal,
             cfg,
             spec,
             trial_index,
@@ -467,6 +467,7 @@ def run() -> int:
     import pygame
 
     from . import audio_cues, display, masking_noise, stimulus
+    from .signal_scheduler import SignalScheduler, exit_cleanly_on_sigterm
 
     pygame.init()
     # Synthesize the response/timeout cues now: building one costs tens of
@@ -514,22 +515,32 @@ def run() -> int:
         print(f"Main-trial trace enabled: {trace_path}")
 
     instrument = stimulus.connect_hardware(cfg)
+    # From here until close() below, the scheduler thread is the only thing that switches the output.
+    signal = SignalScheduler(stimulus.device_for(instrument), watchdog_s=cfg.signal_watchdog_ms / 1000.0).start()
+    exit_cleanly_on_sigterm()
+    print(
+        f"Render mode: {cfg.render_mode} (window {cfg.predict_window_samples} samples, horizon "
+        f"{cfg.predict_horizon_factor:g} x median interval up to {cfg.predict_horizon_max_ms:g} ms, "
+        f"min speed {cfg.predict_min_speed_mm_s:g} mm/s, latency compensation {cfg.latency_compensation_ms:g} ms, "
+        f"watchdog {cfg.signal_watchdog_ms:g} ms, busy-wait margin {1000.0 * (signal.spin_s or 0.0):.1f} ms)"
+    )
 
     try:
         if not wait_for_continue_or_exit(
             screen,
-            f"Ready to begin ({cfg.mode}). Base height {cfg.base_height_mm:g} mm, width {cfg.bar_width_mm:g} mm.",
+            f"Ready to begin ({cfg.mode}, render: {cfg.render_mode}). "
+            f"Base height {cfg.base_height_mm:g} mm, width {cfg.bar_width_mm:g} mm.",
         ):
             return 0
 
         if cfg.mode == "staircase_pilot":
-            run_staircase_pilot(screen, clock, current_calibration, instrument, cfg, summary_path, resolved_seed)
+            run_staircase_pilot(screen, clock, current_calibration, signal, cfg, summary_path, resolved_seed)
         else:
             run_constant_stimuli(
                 screen,
                 clock,
                 current_calibration,
-                instrument,
+                signal,
                 cfg,
                 session_id,
                 trial_path,
@@ -537,11 +548,18 @@ def run() -> int:
                 trace_recorder=trace_recorder,
             )
 
+        if signal.error is not None:
+            print(f"ERROR: the signal scheduler failed ({signal.error!r}); the session was aborted.")
+            display.draw_break(screen, f"Signal error: session aborted. Data saved in {trial_path.parent.name}/")
+            pygame.display.flip()
+            pygame.time.wait(1500)
+            return 1
         display.draw_break(screen, f"Session complete. Data saved in {trial_path.parent.name}/")
         pygame.display.flip()
         pygame.time.wait(1500)
         return 0
     finally:
+        signal.close()
         stimulus.close_hardware(instrument)
         masking_noise.stop()
         pygame.quit()

@@ -30,6 +30,14 @@ record_main_trace: true          # records practice attempts too (tagged is_prac
 masking_noise: true              # continuous brown noise in the headphones for the whole session
 masking_noise_volume: 0.30
 
+render_mode: predictive          # predictive | position | timed_legacy (README: Rendering Method)
+predict_window_samples: 3        # samples in the velocity regression
+predict_horizon_factor: 1.5      # prediction horizon = this x the measured median sample interval ...
+predict_horizon_max_ms: 25.0     # ... but never more than this
+predict_min_speed_mm_s: 5.0      # slower than this: no prediction, the sample itself decides
+latency_compensation_ms: 0.0     # leave at 0 until the rig's latency has been measured
+signal_watchdog_ms: 100.0        # no plan from the main loop for this long -> signal off
+
 carrier_freq_hz: 125.0
 voltage_peak: 4.0
 ir_sample_hz_nominal: 100.0
