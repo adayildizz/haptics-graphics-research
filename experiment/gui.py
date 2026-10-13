@@ -6,7 +6,8 @@ tweaking the participant ID and pressing Apply. On Apply, the window
 hides itself and launches the participant-facing pygame screen
 (``experiment.main``) as a subprocess; it reappears automatically once
 that process exits, and shows the psychometric fit for that session
-(from the freshly saved trial CSV) directly in the panel.
+(from the freshly saved trial CSV) directly in the panel. The session's
+exploration heat maps are then generated in the background.
 """
 
 from __future__ import annotations
@@ -190,8 +191,9 @@ FIELD_HELP: dict[str, str] = {
     "0.30 değeri, 100 mm/s hedef için 70-130 mm/s aralığı üretir.",
     "record_main_trace": "Alıştırma ve ana deneydeki parmak hareketlerini ayrı bir SQLite trace "
     "dosyasına kaydeder (alıştırma denemeleri is_practice/practice_round ile etiketlenir). Staircase "
-    "kayıt edilmez; veritabanı yazımı ayrı worker thread'de yapılır. Animasyon ve heat map için "
-    "analysis/trace_movement.py bu dosyayı okur.",
+    "kayıt edilmez; veritabanı yazımı ayrı worker thread'de yapılır. Animasyon için "
+    "analysis/trace_movement.py bu dosyayı okur; oturum bitince analysis/exploration_maps ziyaret ve "
+    "oyalanma haritalarını data/exploration_maps altına kendiliğinden kaydeder.",
     "blind_test_mode": "Dokunulacak iki sütun tam ekran yüksekliğinde beyaz şeritlerle işaretlenir "
     "(konumlarını bulmak kör bir arama olmasın diye), ama şeritlerin içindeki gerçek yükseklik "
     "çubukları hiç çizilmez -- yükseklik test edilen şey olduğu için ekrandan okunamamalı, sadece "
@@ -531,6 +533,50 @@ class LauncherApp:
         self.root.deiconify()
         self.root.lift()
         self._show_latest_plot()
+        self._start_exploration_maps()
+
+    def _start_exploration_maps(self) -> None:
+        """Start the offline heat-map script on the finished session's trace; never raises."""
+        cfg = self._launch_cfg
+        if cfg is None or self._launch_dry_run or cfg.mode != "constant_stimuli":
+            return
+        out_dir = DATA_DIR / "exploration_maps"
+        try:
+            trace = self._newest_since_launch(DATA_DIR.glob(f"{cfg.participant_id}_*_trace.sqlite3"))
+            if trace is None:
+                return
+            out_dir.mkdir(parents=True, exist_ok=True)
+            log_path = out_dir / f"{trace.name.removesuffix('_trace.sqlite3')}_maps.log"
+            # The experiment process has exited, so the trace is complete; the script only reads it.
+            with log_path.open("w") as log:
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "analysis.exploration_maps", str(trace), "--out", str(out_dir)],
+                    cwd=REPO_ROOT,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+        except Exception as exc:  # noqa: BLE001 -- the session is already saved; only report
+            self._set_maps_status(f"Keşif haritaları başlatılamadı: {exc}")
+            return
+        self._set_maps_status("Keşif haritaları üretiliyor...")
+        threading.Thread(target=self._wait_for_maps, args=(process, log_path), daemon=True).start()
+
+    def _wait_for_maps(self, process: subprocess.Popen, log_path: Path) -> None:
+        returncode = process.wait()
+        if returncode == 0:
+            text = f"Keşif haritaları kaydedildi: {log_path.parent}"
+        elif returncode == 2:
+            text = "Keşif haritası yok: kayıtlı deneme bulunamadı."
+        else:
+            text = f"Keşif haritaları üretilemedi (kod {returncode}), ayrıntı: {log_path}"
+        try:
+            self.root.after(0, self._set_maps_status, text)
+        except Exception:  # noqa: BLE001 -- the window was closed meanwhile
+            pass
+
+    def _set_maps_status(self, text: str) -> None:
+        self.status_var.set(f"{self.status_var.get().split(' | ')[0]} | {text}")
 
     def _newest_since_launch(self, paths: Iterable[Path]) -> Path | None:
         candidates = [p for p in paths if p.stat().st_mtime >= self._launch_started_at - 1]

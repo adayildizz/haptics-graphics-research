@@ -174,9 +174,11 @@ experiment/
 └── data/                # Output directory
 
 analysis/
-└── fit_psychometric.py  # Psychometric-function fitting (psignifit preferred, scipy MLE fallback),
-                          # plotting, ideal-observer simulation. No pygame dependency; runs standalone
-                          # on saved CSVs.
+├── fit_psychometric.py  # Psychometric-function fitting (psignifit preferred, scipy MLE fallback),
+│                         # plotting, ideal-observer simulation. No pygame dependency; runs standalone
+│                         # on saved CSVs.
+├── trace_movement.py    # Per-attempt finger animations (and the earlier sample-count heat map)
+└── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
 
 tests/                   # pytest: level generation, scheduling, psychometric-fit recovery
 ```
@@ -306,6 +308,45 @@ height drawn solid and the tallest/shortest comparison dashed;
 map is saved as PNG and as a long-format CSV (`ix, iy, x0_mm .. y1_mm, visits,
 dwell_ms, samples`) for re-plotting or cross-participant comparison.
 
+#### Exploration maps (`analysis/exploration_maps/`)
+
+```
+python -m analysis.exploration_maps DATA [--participant ID|all] [--cell-mm 2] [--margin-mm 10] [--out DIR]
+       [--normalize per-trial|none] [--freeze-mm 0.5] [--freeze-ms 200] [--jump-mm 10]
+       [--keep-end-freeze] [--include-practice]
+```
+
+`DATA` is one `*_trace.sqlite3` file or a folder of them. The script only reads
+the trace (opened read-only) and does not import the experiment package. For
+every trial it writes one figure with two panels, **visit count | dwell time**,
+in screen coordinates with both bars outlined, plus the raw grid as CSV. For
+every participant it writes one aggregated figure in a **reference/comparison
+frame**: trials whose reference bar was on the right are mirrored, so the
+reference bar is always on the left and every comparison height is dashed on
+the right. Output goes to `<data folder>/exploration_maps/<participant>/<session>/`;
+`trials.csv` there lists what was excluded from each trial.
+
+- **Visits** count entries into a cell. The straight segment between two
+  samples is rasterised, so a fast movement does not skip cells and consecutive
+  samples in one cell add nothing.
+- **Dwell** sums real time from the sample timestamps, split across the cells a
+  segment crosses in proportion to the length inside each. The dwell map plus
+  the time spent outside the grid equals the in-contact time of the trial.
+- **Contact.** The trace has no touch flag, so lift-off is estimated: a *freeze*
+  is the finger staying within `--freeze-mm` of one point for `--freeze-ms`. A
+  freeze before the first movement is excluded, as is one followed by a
+  single-step jump of `--jump-mm` (the finger was in the air). A freeze that
+  continues smoothly is a resting finger and counts as dwell. The freeze that
+  lasts until the response is excluded unless `--keep-end-freeze` is given, and
+  is reported either way. Jump segments are always excluded. If a `contact`
+  column is ever added to `cursor_samples`, it is used instead. Every figure
+  title names the method and the milliseconds excluded.
+- **Aggregation** defaults to `--normalize per-trial`: each trial's map is
+  divided by its own total before averaging, so long trials do not dominate.
+  `none` gives plain sums. Only finished main-block trials are pooled.
+
+The supervisor GUI runs this for the session that just ended (see below).
+
 Open the interactive replay browser with:
 
 ```bash
@@ -334,6 +375,11 @@ need the participant ID changed before pressing **Apply**. Apply writes the
 form values out, hides the panel, and launches the participant-facing pygame
 screen (`experiment.main`) as a subprocess; the panel reappears automatically
 once that session ends.
+
+After the session process has exited, the panel starts
+`analysis.exploration_maps` on that session's trace in the background and
+reports the result in the status line. Maps and a `<session>_maps.log` go to
+`experiment/data/exploration_maps/`; a failure only leaves that log.
 
 The **Past Recordings** tab lists saved trace databases and their attempts in
 chronological order. Selecting an attempt opens Play/Pause, Restart, and
