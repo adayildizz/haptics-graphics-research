@@ -334,6 +334,8 @@ def lateness_ms(records: Sequence[WriteRecord]) -> list[float]:
 
 def run_benchmark(seconds: float, frame: Callable[[], None]) -> tuple[list[float], list[float], float]:
     """Feed the scheduler one plan per ``frame()`` call, as the trial loop does; returns lateness and frame times."""
+    for _ in range(30):  # a new window and the font cache stall the first frames; a session meets them before any trial
+        frame()
     scheduler = SignalScheduler(RecordingDevice()).start()
     records: list[WriteRecord] = []
     frames: list[float] = []
@@ -363,10 +365,11 @@ def _report(label: str, late: Sequence[float], frames: Sequence[float], spin_s: 
         print(f"{label:28s} no timed transition was executed")
         return False
     p95 = _percentile(late, 0.95)
+    over = sum(value > 1.0 for value in late)
     print(
         f"{label:28s} n={len(late):4d}  lateness median {statistics.median(late):6.3f}  p95 {p95:6.3f}  "
-        f"max {max(late):6.3f} ms   busy-wait margin {1000 * spin_s:.1f} ms   "
-        f"frame median {statistics.median(frames):5.1f} ms"
+        f"p99 {_percentile(late, 0.99):6.3f}  max {max(late):6.3f} ms   later than 1 ms: {over} of {len(late)}   "
+        f"busy-wait margin {1000 * spin_s:.1f} ms   frame median {statistics.median(frames):5.1f} ms"
     )
     return p95 <= 1.0
 

@@ -138,6 +138,10 @@ switch the generator's output off by hand.
 - **A prediction can be wrong for one interval.** If the finger slows or turns
   just before an edge, `predictive` may switch on for up to one sample interval
   with the finger still outside.
+- **The scheduler is occasionally late.** On the development Mac about one
+  switch in a few hundred started 2-11 ms late (the operating system, or a
+  pygame call in the main loop that holds the interpreter lock), although the
+  95th percentile stayed far below 1 ms. The timing check prints the count.
 - **The carrier limits edge precision.** One period of the 125 Hz carrier is
   8 ms, which is 0.8 mm at 100 mm/s.
 
