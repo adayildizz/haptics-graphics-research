@@ -47,13 +47,99 @@ Both bars are rendered simultaneously on a split screen. Bar interior = signal O
 
 ## Rendering Method
 
-Bar width is rendered using a **software-based timing method** rather than position-based polling. When the leading edge of a bar is detected, stimulus duration is computed as:
+The signal is on inside a bar and off outside it. `render_mode` selects how the
+moment of switching is decided. The selected mode is shown on the start screen,
+printed at session start and stored in the session's config snapshot.
+
+| `render_mode` | Rule |
+| --- | --- |
+| `predictive` (default) | The finger's velocity vector is estimated by a linear fit over the last 3 position samples. Along that straight line, the instants at which the finger enters and leaves each bar are computed for the next 1.5 sample intervals (at most 25 ms) and the signal is switched at those instants. Entry and exit can both fall inside one interval (a clipped corner). Each new sample cancels what was planned and plans again. Below 5 mm/s nothing is predicted: the sample itself decides. |
+| `position` | On exactly while the latest sample is inside a bar. No prediction; the baseline for comparison. |
+| `timed_legacy` | The original rule, kept for comparison and documentation only: on while the sample is inside the bar, and after it leaves until `bar_width / entry speed` has passed since entry (speed floor 1 mm/s, at most 2 s). |
+
+All four edges of a bar are treated alike (left, right, top, bottom), from any
+direction. `predictive` and `position` test the finger against the bars at
+their **configured millimetre size**; `timed_legacy` keeps the pixel-rounded
+rectangles it always used (up to one pixel different). What is drawn on the
+operator's screen is unchanged in every mode.
+
+**Who switches the output.** One scheduler thread (`signal_scheduler.py`) is the
+only code that writes `OUTP ON` / `OUTP OFF` to the generator during a session.
+The trial loop sends it a plan every frame; a newer plan replaces the pending
+one. Decisions are still made once per frame (60 per second), from the position
+read in that frame. What no longer depends on the frame is the *instant* of a
+predicted switch. An earlier version of this section said a timer controlled
+the signal independently of the frame rate; that was not so. In every mode
+before this one, and in `position` and `timed_legacy` today, a switch can only
+be decided at a frame. In `timed_legacy` the decisions and the sequence of
+commands are identical to the original code (pinned by
+`tests/test_render_legacy_golden.py`), but the write now happens on the
+scheduler thread, so its timing is not identical.
+
+The rule `duration = bar_width / finger_speed` came from Sun et al. (2023),
+where the program sets the finger's speed. Here the speed is estimated from
+two position samples of a free-moving finger, the rule uses bar *width* whatever
+the direction of movement, and bar height never enters it. After a slow entry
+it keeps the signal on above the bar's top edge. `analysis/render_replay`
+measures this (see below).
+
+Settings (all in the YAML config and the supervisor form):
+
+```yaml
+render_mode: predictive       # predictive | position | timed_legacy
+predict_window_samples: 3     # samples in the velocity fit; unchanged positions are not counted
+predict_horizon_factor: 1.5   # horizon = this x the measured median sample interval ...
+predict_horizon_max_ms: 25.0  # ... capped here; nothing is ever predicted beyond the horizon
+predict_min_speed_mm_s: 5.0   # slower: no prediction
+latency_compensation_ms: 0.0  # treat each position as this old and start the prediction further along
+signal_watchdog_ms: 100.0     # no plan from the trial loop for this long -> signal off
+```
+
+Each bar crossing ("pass") is still logged per trial with its entry speed and
+time in the bar. `commanded_duration_s` is filled only in `timed_legacy`; it is
+`null` in the other modes.
+
+### Before the first real session: timing check
+
+The scheduler aims to start each planned write within 1 ms of its planned
+instant (95th percentile). That depends on the computer. On the lab PC, run:
 
 ```
-duration = bar_width / finger_speed
+python -m experiment.signal_scheduler
 ```
 
-A high-resolution timer (`time.perf_counter()`) controls signal delivery independently of the IR frame rate. This bypasses the sampling bottleneck: at ~100 Hz with 10 cm/s finger speed, classical position-based rendering cannot reliably deliver bars narrower than ~2-3 mm. Per trial, each bar crossing ("pass") is logged separately with its commanded duration, actual on-duration, entry finger speed, and whether the leading edge was cleanly detected (used to separate perceptual failures from rendering failures during analysis).
+It uses a fake device and contacts no generator. It reports the planned-to-write
+delay with the main loop idle and under the trial's own drawing loop, and ends
+with `PASS` or `FAIL`. If it fails, do not run a session; the fallback is to
+move the scheduler into its own process. The delay inside the generator
+(output relay, carrier phase) is not part of this figure and has to be measured
+with an oscilloscope.
+
+### Safety
+
+The output is switched off when a trial ends, when the session ends, when the
+scheduler hits an error (the session then ends as `aborted`, with everything
+recorded so far on disk), when the trial loop sends no plan for
+`signal_watchdog_ms`, and when the program exits normally, through an exception,
+Ctrl+C or a closed window. **If the process is killed or crashes, the output can
+stay on.** That was already true before this change. The operator must then
+switch the generator's output off by hand.
+
+### Known limits
+
+- **Not every IR update is seen.** The position is read once per frame, so about
+  40% of the frame's ~100 Hz updates are never read, and a position is 0-10 ms
+  old when read. In simulation this leaves a one-sided lag of about 0.6 mm at
+  100 mm/s in `predictive`. `latency_compensation_ms` can remove the average
+  lag once it has been measured on the rig; it does not narrow the spread.
+- **Practice speed guidance uses the two-point speed**, which swings between
+  about 55 and 127 mm/s for a true 100 mm/s for the same reason. It was left as
+  it is.
+- **A prediction can be wrong for one interval.** If the finger slows or turns
+  just before an edge, `predictive` may switch on for up to one sample interval
+  with the finger still outside.
+- **The carrier limits edge precision.** One period of the 125 Hz carrier is
+  8 ms, which is 0.8 mm at 100 mm/s.
 
 ## Procedure
 
@@ -166,8 +252,11 @@ experiment/
 ├── config.py            # Rig constants + ExperimentConfig (the single design-parameter source)
 ├── constant_stimuli.py  # Level generation + trial scheduling (no pygame dependency)
 ├── staircase.py         # Staircase algorithm for pilot mode (no pygame dependency)
-├── stimulus.py          # Bar rendering and signal control
-├── trial.py             # Single trial logic, per-pass fidelity logging
+├── stimulus.py          # Generator connection and the VISA write helpers
+├── render_logic.py      # Pure render decisions: bars, velocity, predictive plans (no pygame, no VISA)
+├── signal_scheduler.py  # The one thread that switches the output; watchdog; timing benchmark
+├── trial_render.py      # Per-trial glue: sample -> plan -> scheduler -> trace events
+├── trial.py             # Single trial logic, per-pass logging
 ├── display.py           # Pygame UI and screen layout
 ├── data_logger.py       # CSV/JSON logging
 ├── configs/             # Example YAML configs (default.yaml, pilot.yaml)
@@ -178,7 +267,8 @@ analysis/
 │                         # plotting, ideal-observer simulation. No pygame dependency; runs standalone
 │                         # on saved CSVs.
 ├── trace_movement.py    # Per-attempt finger animations (and the earlier sample-count heat map)
-└── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
+├── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
+└── render_replay/       # Replays a recording through each render mode; edge errors in mm
 
 tests/                   # pytest: level generation, scheduling, psychometric-fit recovery
 ```
@@ -209,6 +299,8 @@ practice_voice_feedback: true
 ideal_finger_speed_mm_s: 100.0
 ideal_speed_tolerance_pct: 0.30
 record_main_trace: true   # practice attempts are traced too, tagged is_practice / practice_round
+
+render_mode: predictive   # predictive | position | timed_legacy; see "Rendering Method" for the rest
 
 masking_noise: true       # continuous brown noise in the headphones for the whole session
 masking_noise_volume: 0.30
@@ -253,7 +345,7 @@ unanswered included — told apart by the **`outcome`** column:
 | `answered` | a response was given; the only rows the curve fit consumes | `answered` |
 | `timeout` | the response window closed and the trial was deferred for another attempt | `timeout` |
 | `exhausted` | the last attempt allowed by `max_trial_attempts` also expired | `timeout` |
-| `aborted` | the exit key or a closed window ended the trial, and with it the session | `aborted` |
+| `aborted` | the exit key, a closed window or a signal failure ended the trial, and with it the session | `aborted` |
 
 The vocabulary lines up with the trace database's per-attempt `outcome`, so the
 CSV and the replay recordings describe the same set of events. The one refinement
@@ -284,6 +376,20 @@ side, signal state, ~60 Hz) are accumulated in small in-memory batches and
 SQLite writes run on a dedicated worker thread, so the real-time trial loop
 never performs disk I/O. The trace is intended for the offline replay,
 animation and heat-map tools; none of those run during an experiment.
+
+`cursor_samples.signal_on` is the state **the frame asked for**, sampled together
+with the position. It does not show when the output actually switched. The real
+switches are in `trace_events` (no schema change; times in microseconds from the
+start of the trial, taken from `time.perf_counter()`):
+
+| `event_type` | Written | Payload |
+| --- | --- | --- |
+| `signal_write` | once per switch of the output | `kind` (`plan`: decided at a frame; `transition`: timed between frames; or the reason the trial ended), `on`, `planned_us`, `write_start_us`, `write_end_us`, `bar`, `edge` (`left`, `right`, `top`, `bottom`), `x_mm`, `y_mm`, `vx_mm_s`, `vy_mm_s`, `mode` |
+| `signal_watchdog` | each time the watchdog switches the signal off | the same |
+| `sample_stats` | once per trial | sample count, interval min / median / p95 / max in ms, number and share of samples whose position had not changed, effective horizon, the scheduler's busy-wait margin, `mode` |
+| `signal_on`, `signal_off` | when the frame-level state changes | as before |
+
+A trial is not closed until every write returned by the scheduler is in the trace.
 
 #### Per-trial animation and grid heat map (`analysis/trace_movement.py`)
 
@@ -346,6 +452,41 @@ the right. Output goes to `<data folder>/exploration_maps/<participant>/<session
   `none` gives plain sums. Only finished main-block trials are pooled.
 
 The supervisor GUI runs this for the session that just ended (see below).
+
+#### Render replay (`analysis/render_replay/`)
+
+```
+python -m analysis.render_replay TRACE [--out DIR] [--window 3] [--horizon-factor 1.5] [--horizon-max-ms 25]
+       [--min-speed 5] [--latency-ms 0]
+python -m analysis.render_replay --synthetic [--out DIR] ...
+```
+
+Runs the decision code of all three render modes (`experiment/render_logic.py`,
+the same module the trial loop uses, and nothing else from the experiment
+package) over recorded finger positions. For every bar edge the finger crossed
+it reports how far past the edge the finger was when that mode switched the
+signal, in mm (+ = after the crossing). The top edge is reported as its effect
+on felt height: **upward exit, + = the bar feels taller; downward entry, - = the
+bar feels shorter**. If the signal was still on when the finger came back in,
+the figure is the furthest the finger got outside and the case is counted under
+"never off". The table gives median, 5%, 95% and largest value per edge type,
+the number of visits a mode missed altogether, and the time it had the signal on
+away from any bar.
+
+`--synthetic` uses a built-in session with a known finger path and what a 60 Hz
+loop polling a 100 Hz frame would record of it, and prints two tables: judged
+as a recording would be, and judged against the finger path itself.
+
+What the figures do not include:
+
+- The recording's `signal_on` column is sampled in the same frame as the
+  position, so it cannot show a delay. The figures come from replaying the
+  decisions, with the true path taken as straight lines between samples.
+- How old a position already was when it was read is invisible in a recording.
+  Only the second synthetic table shows it.
+- Switches are assumed to happen at their planned instant. Scheduler lateness,
+  the VISA write and the generator's own delay are not included; the last two
+  need an oscilloscope.
 
 Open the interactive replay browser with:
 
