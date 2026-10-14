@@ -115,6 +115,20 @@ move the scheduler into its own process. The delay inside the generator
 (output relay, carrier phase) is not part of this figure and has to be measured
 with an oscilloscope.
 
+### Before the first real session: input check
+
+```
+python -m experiment.input_probe
+```
+
+Opens a fullscreen window for 15 s (no generator, no trial). Slide one finger
+around, lift it and touch again a few times. It reports how many position
+reports per second reach the program and answers three questions: does every
+report arrive (or are they merged into one per frame), is contact reported as a
+mouse-button press, and is it reported as touch events. The summary is also
+saved to `experiment/data/input_probe_<time>.json`. The answers decide whether
+recording a contact flag and sampling per report are worth adding.
+
 ### Safety
 
 The output is switched off when a trial ends, when the session ends, when the
@@ -260,6 +274,7 @@ experiment/
 ├── render_logic.py      # Pure render decisions: bars, velocity, predictive plans (no pygame, no VISA)
 ├── signal_scheduler.py  # The one thread that switches the output; watchdog; timing benchmark
 ├── trial_render.py      # Per-trial glue: sample -> plan -> scheduler -> trace events
+├── input_probe.py       # Rig check: position reports per second, and whether contact is reported
 ├── trial.py             # Single trial logic, per-pass logging
 ├── display.py           # Pygame UI and screen layout
 ├── data_logger.py       # CSV/JSON logging
