@@ -404,6 +404,7 @@ def run_constant_stimuli(
             trial_index,
             fps=60,
             trace_attempt=trace_attempt,
+            total_trials=total_trials,
         )
         if isinstance(result, trial_module.TrialAborted):
             data_logger.append_trial(

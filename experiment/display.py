@@ -56,6 +56,12 @@ def countdown_seconds(remaining_time_s: float) -> int:
     return max(0, math.ceil(remaining_time_s))
 
 
+def trial_counter_text(is_practice: bool, trial_index: int, total_trials: int | None = None) -> str:
+    """"Trial 12/66" when the block size is known, otherwise just "Trial 12"."""
+    label = "Practice" if is_practice else "Trial"
+    return f"{label} {trial_index}/{total_trials}" if total_trials else f"{label} {trial_index}"
+
+
 def init_window(
     fullscreen: bool = USE_FULLSCREEN,
     size: tuple[int, int] | None = None,
@@ -113,6 +119,7 @@ def draw_trial(
     blind_test_mode: bool = False,
     touch_pos: tuple[int, int] | None = None,
     remaining_time_s: float | None = None,
+    total_trials: int | None = None,
 ) -> None:
     width, height = screen.get_size()
 
@@ -146,8 +153,8 @@ def draw_trial(
         timer = label_font.render(f"TIME {seconds_left:02d}", True, timer_color)
         screen.blit(timer, timer.get_rect(midright=(width - 24, 34)))
 
-    label = "Practice" if is_practice else "Trial"
-    info = body_font.render(f"Width {bar_width_mm:g} mm    {label} {trial_index}", True, MUTED)
+    counter = trial_counter_text(is_practice, trial_index, total_trials)
+    info = body_font.render(f"Width {bar_width_mm:g} mm    {counter}", True, MUTED)
     screen.blit(info, info.get_rect(center=(width // 2, 68)))
 
     pygame.draw.rect(screen, HAPTIC_BORDER, layout.haptic_area, 3)

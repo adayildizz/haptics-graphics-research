@@ -141,6 +141,7 @@ def run_trial(
     speed_coach: PracticeSpeedCoach | None = None,
     trace_attempt: AttemptTraceBuffer | None = None,
     feedback_speaker: Callable[[str], object] | None = None,
+    total_trials: int | None = None,
 ) -> TrialResult | TrialTimeout | TrialAborted:
     """Run one 2AFC trial, returning a response, a timeout, or an abort.
 
@@ -351,6 +352,7 @@ def run_trial(
             blind_test_mode=cfg.blind_test_mode,
             touch_pos=pos,
             remaining_time_s=max(0.0, cfg.response_timeout_s - elapsed_trial_s),
+            total_trials=total_trials,
         )
         pygame.display.flip()
         previous_side = active_side
