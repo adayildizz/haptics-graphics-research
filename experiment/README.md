@@ -134,9 +134,11 @@ python -m experiment.input_probe
 
 Opens a fullscreen window for 15 s (no generator, no trial). Slide one finger
 around, lift it and touch again a few times. It reports how many position
-reports per second reach the program and answers three questions: does every
-report arrive (or are they merged into one per frame), is contact reported as a
-mouse-button press, and is it reported as touch events. The summary is also
+reports per second reach the program and answers three questions: are position
+reports kept apart rather than merged into one per frame (judged against the
+loop rate it measured; it cannot tell whether every report the frame produced
+arrived), is contact reported as a mouse-button press, and is it reported as
+touch events. The summary is also
 saved to `experiment/data/input_probe_<time>.json`. The answers decide whether
 recording a contact flag and sampling per report are worth adding.
 

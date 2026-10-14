@@ -12,6 +12,7 @@ from pathlib import Path
 
 JUMP_MM = 10.0
 MIN_MOVING_FRAMES = 30  # half a second of movement; less and the answers would be guesses
+NOT_MERGED_FACTOR = 1.1  # merged reports cannot outnumber frames; clearly more than one per frame means kept apart
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
@@ -46,13 +47,15 @@ def summarize(frames: Sequence[Frame], px_per_mm: tuple[float, float]) -> dict[s
     pressed_while_moving = sum(frame.pressed for frame in moving) / len(moving) if moving else 0.0
     finger_down = sum(frame.finger_down for frame in frames)
     enough = len(moving) >= MIN_MOVING_FRAMES
+    loop_hz = len(intervals) / duration if duration > 0 else 0.0
+    reports_per_s = motions_while_moving / moving_s if moving_s > 0 else 0.0
     return {
         "seconds": round(duration, 2),
-        "loop_hz": round(len(intervals) / duration, 1) if duration > 0 else 0.0,
+        "loop_hz": round(loop_hz, 1),
         "loop_interval_median_ms": round(1000.0 * statistics.median(intervals), 2) if intervals else 0.0,
         "frames_with_movement": len(moving),
         "motion_events_per_moving_frame": round(per_frame, 2),
-        "motion_events_per_second_while_moving": round(motions_while_moving / moving_s, 1) if moving_s > 0 else 0.0,
+        "motion_events_per_second_while_moving": round(reports_per_s, 1),
         "frames_by_motion_events": {
             label: sum(1 for frame in moving if pick(frame.motions))
             for label, pick in (("0", lambda n: n == 0), ("1", lambda n: n == 1), ("2", lambda n: n == 2), ("3+", lambda n: n >= 3))
@@ -65,8 +68,8 @@ def summarize(frames: Sequence[Frame], px_per_mm: tuple[float, float]) -> dict[s
         "finger_motion_events": sum(frame.finger_motion for frame in frames),
         "jumps_over_10_mm": int(jumps),
         "enough_movement": enough,
-        # More than one event per frame on average means reports are not being merged into one.
-        "every_report_arrives": per_frame > 1.2 if enough else None,
+        # Relative to the measured loop rate: says reports are not merged, not that every one arrives.
+        "reports_not_merged": reports_per_s > NOT_MERGED_FACTOR * loop_hz if enough else None,
         "contact_as_mouse_button": button_down >= 1 and pressed_while_moving > 0.8 if enough else None,
         "contact_as_touch_events": finger_down >= 1 if enough else None,
     }
@@ -97,9 +100,9 @@ def report(summary: dict[str, object]) -> str:
             f"{summary['finger_motion_events']} motion",
             f"Jumps of 10 mm or more between two frames: {summary['jumps_over_10_mm']}",
             "",
-            f"1. Does every position report reach the program?   {yes(summary['every_report_arrives'])}",
-            f"2. Is contact reported as a mouse button press?     {yes(summary['contact_as_mouse_button'])}",
-            f"3. Is contact reported as touch events?             {yes(summary['contact_as_touch_events'])}",
+            f"1. Are position reports kept apart (not merged into one per frame)?   {yes(summary['reports_not_merged'])}",
+            f"2. Is contact reported as a mouse button press?                       {yes(summary['contact_as_mouse_button'])}",
+            f"3. Is contact reported as touch events?                               {yes(summary['contact_as_touch_events'])}",
             *warning,
         )
     )
