@@ -57,6 +57,17 @@ printed at session start and stored in the session's config snapshot.
 | `position` | On exactly while the latest sample is inside a bar. No prediction; the baseline for comparison. |
 | `timed_legacy` | The original rule, kept for comparison and documentation only: on while the sample is inside the bar, and after it leaves until `bar_width / entry speed` has passed since entry (speed floor 1 mm/s, at most 2 s). |
 
+**A lifted finger switches the signal off, in every mode.** The cursor keeps
+reporting its last position after the finger leaves the glass, so without this
+a lift inside a bar would leave the signal on. The rule sits in one place
+(`trial_render.py`) for all three modes. On touching down again every mode starts
+afresh, because the cursor has jumped; a switch-on at that moment is logged with
+edge `touch`, a switch-off at a lift with edge `lift`. The rule applies only
+once the input device has reported a touch in the session (see *Contact* under
+the movement trace). A driver that never reports touch keeps the earlier
+behaviour, so the stimulus is never silenced by a device that cannot say a
+finger is down.
+
 All four edges of a bar are treated alike (left, right, top, bottom), from any
 direction. `predictive` and `position` test the finger against the bars at
 their **configured millimetre size**; `timed_legacy` keeps the pixel-rounded
@@ -416,8 +427,9 @@ left mouse button held down. `cursor_samples.contact` records it per sample, and
 `contact_down` / `contact_up` events mark the changes. A device that never
 reports touch would otherwise look like a finger that is never down, so contact
 is only trusted once the device has reported a touch at least once in the
-session. Until then `contact` is written as 1 (unknown), and the program prints a
-warning at the end of the first trial. `sample_stats` says which case applied
+session. Until then `contact` is written as 1 (unknown), the signal is not
+switched off at a lift, and the program prints a warning at the end of the
+first trial. `sample_stats` says which case applied
 (`device_reports_touch`). Recordings from schemas 1 and 2 have no `contact`
 column and still load; opening one for writing adds the newer columns in place.
 `analysis/exploration_maps` uses the column instead of its lift-off estimate

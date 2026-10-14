@@ -136,3 +136,50 @@ def test_heat_maps_use_the_recorded_contact_instead_of_guessing(tmp_path):
     assert summary["contact_method"] == "contact flag"
     # 20 frames off the glass, plus the step into the first and out of the last of them.
     assert float(summary["no_contact_ms"]) == pytest.approx(21 * 1000 / 60, abs=25)
+
+
+def _writes(attempt):
+    return [payload for _, kind, payload in attempt.events if kind == "signal_write"]
+
+
+@pytest.mark.parametrize("mode", ["predictive", "position", "timed_legacy"])
+def test_a_lifted_finger_switches_the_signal_off_in_every_mode(mode):
+    # During frames 30-49 the cursor sits inside the left bar, but the finger is off the glass.
+    _, attempt, _, _ = run_scripted_trial(config(render_mode=mode), CALIBRATION, SPEC, LIFT)
+    on = [sample.signal_on for sample in attempt.samples]
+    assert all(on[22:30]) and not any(on[30:50])
+    assert not any(on[50:58])  # touched down again between the bars
+    assert any(on[58:])  # and the right bar is felt as usual afterwards
+    if mode != "predictive":  # with a scripted clock only the immediate writes are deterministic
+        lift = [w for w in _writes(attempt) if w["edge"] == "lift"]
+        assert len(lift) == 1 and lift[0]["on"] is False and lift[0]["bar"] == "left"
+
+
+@pytest.mark.parametrize("mode", ["predictive", "position", "timed_legacy"])
+def test_touching_down_inside_a_bar_switches_on_at_once_and_is_labelled(mode):
+    scenario = dict(
+        path=polyline([(0, 72, 141), (9, 72, 141), (10, 122, 140), (30, 123, 140)], 31),
+        touch={0: True, 5: False, 10: True},
+        end="left",
+    )
+    _, attempt, _, _ = run_scripted_trial(config(render_mode=mode), CALIBRATION, SPEC, scenario)
+    on = [sample.signal_on for sample in attempt.samples]
+    assert all(on[:5]) and not any(on[5:10]) and all(on[10:])
+    touch = [w for w in _writes(attempt) if w["edge"] == "touch"]
+    assert len(touch) == 1 and touch[0]["on"] is True and touch[0]["bar"] == "right"
+
+
+def test_without_touch_reports_a_still_cursor_inside_a_bar_keeps_the_signal_on():
+    scenario = dict(path=LIFT["path"], end="left")  # same path, but the device never reports touch
+    _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, scenario)
+    on = [sample.signal_on for sample in attempt.samples]
+    assert all(on[22:50])
+    assert not [w for w in _writes(attempt) if w["edge"] in ("lift", "touch")]
+
+
+def test_once_the_device_has_reported_touch_the_next_trial_trusts_it_from_its_first_frame():
+    run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, LIFT)
+    hovering = dict(path=polyline([(0, 60, 141), (40, 90, 141)], 41), end="left")  # button never pressed
+    _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, hovering)
+    assert not any(sample.signal_on for sample in attempt.samples)
+    assert not any(sample.contact for sample in attempt.samples)

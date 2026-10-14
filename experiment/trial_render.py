@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from . import render_logic as rl
@@ -77,6 +77,16 @@ class TrialRenderer:
             cfg.bar_width_mm,
             *heights,
         )
+        self._cfg = cfg
+        self._fps = fps
+        self._quantum_mm = max(1.0 / calibration.px_per_mm_x, 1.0 / calibration.px_per_mm_y)
+        self._lifted = False
+        self._start_afresh()
+
+    def _start_afresh(self) -> None:
+        """New decision state: at the start of a trial and whenever the finger comes back onto the glass."""
+        cfg = self._cfg
+        self._previous = None
         self._legacy = rl.LegacyTimer(cfg.bar_width_mm, MIN_SPEED_MM_S, MAX_SIGNAL_DURATION_S)
         self._planner: rl.PredictivePlanner | rl.PositionPlanner | None = None
         if self.mode == "predictive":
@@ -87,8 +97,8 @@ class TrialRenderer:
                 horizon_max_s=cfg.predict_horizon_max_ms / 1000.0,
                 min_speed_mm_s=cfg.predict_min_speed_mm_s,
                 latency_s=cfg.latency_compensation_ms / 1000.0,
-                nominal_interval_s=1.0 / fps,
-                position_quantum_mm=max(1.0 / calibration.px_per_mm_x, 1.0 / calibration.px_per_mm_y),
+                nominal_interval_s=1.0 / self._fps,
+                position_quantum_mm=self._quantum_mm,
             )
         elif self.mode == "position":
             self._planner = rl.PositionPlanner(self._nominal)
@@ -105,7 +115,16 @@ class TrialRenderer:
         sample = rl.Sample(now_s, x_mm, y_mm)
         self._clock.add(now_s, repeated=pos == self._last_pos)
         self._last_pos = pos
-        if self._planner is None:
+        touched_down = finger_down and self._lifted
+        if touched_down:
+            # The cursor sat still while the finger was up and has now jumped: no mode may build on that.
+            self._start_afresh()
+        self._lifted = not finger_down
+        if not finger_down:
+            # Every mode, one rule: a lifted finger feels nothing, so the signal is off.
+            side = None
+            plan = rl.Plan(now_s, False, rl.side_at(self._nominal, x_mm, y_mm), "lift", (), x_mm, y_mm)
+        elif self._planner is None:
             side = self._pixel_side(pos)
             on = self._legacy.step(now_s, side, speed_mm_s)
             bar, edge = rl.explain_switch(self._previous, sample, self._pixel, on)
@@ -114,7 +133,9 @@ class TrialRenderer:
             plan = self._planner.plan(sample)
             side = rl.side_at(self._nominal, x_mm, y_mm)
             self._horizon_s = plan.horizon_s
-        self._previous = sample
+        if touched_down and plan.on:
+            plan = replace(plan, edge="touch")
+        self._previous = sample if finger_down else None
         self._signal.submit(plan)
         self._log(self._signal.drain())
         self._log_contact(now_s, contact, side)
