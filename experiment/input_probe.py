@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 JUMP_MM = 10.0
+MIN_MOVING_FRAMES = 30  # half a second of movement; less and the answers would be guesses
 DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
@@ -44,6 +45,7 @@ def summarize(frames: Sequence[Frame], px_per_mm: tuple[float, float]) -> dict[s
     button_down = sum(frame.button_down for frame in frames)
     pressed_while_moving = sum(frame.pressed for frame in moving) / len(moving) if moving else 0.0
     finger_down = sum(frame.finger_down for frame in frames)
+    enough = len(moving) >= MIN_MOVING_FRAMES
     return {
         "seconds": round(duration, 2),
         "loop_hz": round(len(intervals) / duration, 1) if duration > 0 else 0.0,
@@ -62,16 +64,26 @@ def summarize(frames: Sequence[Frame], px_per_mm: tuple[float, float]) -> dict[s
         "finger_up_events": sum(frame.finger_up for frame in frames),
         "finger_motion_events": sum(frame.finger_motion for frame in frames),
         "jumps_over_10_mm": int(jumps),
+        "enough_movement": enough,
         # More than one event per frame on average means reports are not being merged into one.
-        "every_report_arrives": per_frame > 1.2,
-        "contact_as_mouse_button": button_down >= 1 and pressed_while_moving > 0.8,
-        "contact_as_touch_events": finger_down >= 1,
+        "every_report_arrives": per_frame > 1.2 if enough else None,
+        "contact_as_mouse_button": button_down >= 1 and pressed_while_moving > 0.8 if enough else None,
+        "contact_as_touch_events": finger_down >= 1 if enough else None,
     }
 
 
 def report(summary: dict[str, object]) -> str:
     counts = summary["frames_by_motion_events"]
-    yes = lambda flag: "YES" if flag else "NO"  # noqa: E731
+    yes = lambda flag: "UNKNOWN" if flag is None else ("YES" if flag else "NO")  # noqa: E731
+    warning = (
+        ()
+        if summary["enough_movement"]
+        else (
+            "",
+            "!! Too little finger movement reached the program, so the answers below are UNKNOWN, not NO.",
+            "!! Check that the red dot followed your finger on the touch screen, then run the check again.",
+        )
+    )
     return "\n".join(
         (
             f"Loop: {summary['loop_hz']} Hz (median interval {summary['loop_interval_median_ms']} ms), "
@@ -88,6 +100,7 @@ def report(summary: dict[str, object]) -> str:
             f"1. Does every position report reach the program?   {yes(summary['every_report_arrives'])}",
             f"2. Is contact reported as a mouse button press?     {yes(summary['contact_as_mouse_button'])}",
             f"3. Is contact reported as touch events?             {yes(summary['contact_as_touch_events'])}",
+            *warning,
         )
     )
 
@@ -130,8 +143,10 @@ def run(seconds: float, *, fullscreen: bool = True, out_dir: Path | None = DATA_
             frames.append(Frame(now, pygame.mouse.get_pos(), bool(pygame.mouse.get_pressed()[0]), **counts))
             screen.fill(display.BACKGROUND)
             lines = (
-                "Input check: slide one finger around, lift it and touch again several times.",
-                f"{max(0.0, seconds - (now - start)):4.1f} s left     ESC ends early",
+                "Input check: slide one finger on the touch surface, lift it and touch again several times.",
+                "The red dot must follow your finger; if it does not, input is not reaching this window.",
+                f"{max(0.0, seconds - (now - start)):4.1f} s left     ESC ends early     moving frames so far: "
+                f"{sum(1 for a, b in zip(frames, frames[1:]) if a.pos != b.pos)}",
             )
             for row, text in enumerate(lines):
                 screen.blit(font.render(text, True, display.TEXT), (40, 40 + 40 * row))

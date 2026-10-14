@@ -60,4 +60,13 @@ def test_run_records_frames_and_saves_the_summary_without_a_real_window(monkeypa
     summary = run(0.3, fullscreen=False, out_dir=tmp_path)
     assert summary["loop_hz"] > 10 and summary["frames_with_movement"] == 0
     (saved,) = tmp_path.glob("input_probe_*.json")
-    assert json.loads(saved.read_text())["every_report_arrives"] is False
+    # No finger, no answer: UNKNOWN rather than a NO that would read as a fact about the device.
+    assert json.loads(saved.read_text())["every_report_arrives"] is None
+    text = report(summary)
+    assert "UNKNOWN" in text and "UNKNOWN, not NO" in text and "red dot" in text
+
+
+def test_a_few_moving_frames_are_not_enough_to_answer():
+    summary = summarize(sliding(20, lambda k: 2, pressed=True, button_down=1), PX_PER_MM)
+    assert summary["enough_movement"] is False
+    assert summary["every_report_arrives"] is None and summary["contact_as_mouse_button"] is None
