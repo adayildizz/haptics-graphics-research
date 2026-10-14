@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-SCHEMA_VERSION = 2  # v2: attempts carry is_practice / practice_round
+SCHEMA_VERSION = 3  # v2: attempts carry is_practice / practice_round; v3: cursor_samples.contact
+# Columns added after v1, with the value older recordings implicitly carried.
+ADDED_COLUMNS = (
+    ("attempts", "is_practice", "INTEGER NOT NULL DEFAULT 0"),
+    ("attempts", "practice_round", "INTEGER NOT NULL DEFAULT 0"),
+    ("cursor_samples", "contact", "INTEGER NOT NULL DEFAULT 1"),
+)
 
 AttemptOutcome = Literal["answered", "timeout", "aborted"]
 Side = Literal["left", "right"]
@@ -34,6 +40,7 @@ class CursorSample:
     in_active_area: bool
     active_side: Side | None
     signal_on: bool
+    contact: bool = True  # finger on the glass; also True while the device has not shown it reports touch
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,7 @@ class TraceStore:
                 in_active_area INTEGER NOT NULL CHECK (in_active_area IN (0, 1)),
                 active_side TEXT CHECK (active_side IS NULL OR active_side IN ('left', 'right')),
                 signal_on INTEGER NOT NULL CHECK (signal_on IN (0, 1)),
+                contact INTEGER NOT NULL DEFAULT 1 CHECK (contact IN (0, 1)),
                 PRIMARY KEY (attempt_id, sequence)
             );
 
@@ -138,6 +146,11 @@ class TraceStore:
                 ON trace_events (attempt_id, t_us);
             """
         )
+        # An older recording reopened for writing gets the newer columns in place.
+        for table, column, definition in ADDED_COLUMNS:
+            existing = {row[1] for row in self.connection.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                self.connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         self.connection.execute(
             "INSERT OR REPLACE INTO trace_metadata (key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -208,8 +221,8 @@ class TraceStore:
             INSERT INTO cursor_samples (
                 attempt_id, sequence, t_us, frame_dt_us,
                 x_px, y_px, x_mm, y_mm, speed_mm_s,
-                in_active_area, active_side, signal_on
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                in_active_area, active_side, signal_on, contact
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -225,6 +238,7 @@ class TraceStore:
                     int(sample.in_active_area),
                     sample.active_side,
                     int(sample.signal_on),
+                    int(sample.contact),
                 )
                 for sample in samples
             ],

@@ -163,6 +163,8 @@ def run_trial(
 
     trial_start = time.perf_counter()
     last_pos = pygame.mouse.get_pos()
+    # The touch frame reports a finger on the glass as the left mouse button held down.
+    contact = bool(pygame.mouse.get_pressed()[0])
     last_time = trial_start
     previous_side: str | None = None
     previous_signal_on = False
@@ -196,6 +198,12 @@ def run_trial(
             # Without a working signal the trial is not the experiment any more: stop here, keep what was recorded.
             return aborted("signal_error", now)
         for event in pygame.event.get():
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                contact = True
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                contact = False
+            elif event.type == pygame.MOUSEMOTION:
+                contact = bool(event.buttons[0])
             if event.type == pygame.QUIT:
                 return aborted("window_closed", now)
             if event.type == pygame.KEYDOWN:
@@ -298,7 +306,8 @@ def run_trial(
         x_mm = (pos[0] - calibration.active_left_px) / calibration.px_per_mm_x
         y_mm = (pos[1] - calibration.active_top_px) / calibration.px_per_mm_y
         # ``signal_on`` is what this frame asked for; the scheduler logs when the output really switched.
-        signal_on, active_side = renderer.frame(now, pos, x_mm, y_mm, speed_mm_s)
+        decision = renderer.frame(now, pos, x_mm, y_mm, speed_mm_s, contact)
+        signal_on, active_side = decision.signal_on, decision.active_side
         if active_side is not None and active_side != previous_side:
             commanded_s = stimulus.stimulus_duration(cfg.bar_width_mm, speed_mm_s) if cfg.render_mode == LEGACY else None
             tracker.start(active_side, now, speed_mm_s, commanded_s, elapsed)
@@ -320,6 +329,7 @@ def run_trial(
                     in_active_area=layout.haptic_area.collidepoint(pos),
                     active_side=active_side,
                     signal_on=signal_on,
+                    contact=decision.finger_down,
                 )
             )
             trace_sequence += 1

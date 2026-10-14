@@ -285,6 +285,18 @@ def explain_switch(
     return name or bar, ""
 
 
+class ContactGate:
+    """Whether the finger is on the glass, trusting contact only once the device has reported a touch."""
+
+    def __init__(self) -> None:
+        self.device_reports_touch = False
+
+    def finger_down(self, contact: bool) -> bool:
+        # A driver that never reports touch would otherwise read as a finger that is never down.
+        self.device_reports_touch = self.device_reports_touch or contact
+        return contact or not self.device_reports_touch
+
+
 class PositionPlanner:
     """Signal on exactly while the latest sample is inside a bar; no prediction."""
 

@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from render_harness import polyline, run_scripted_trial
+
+from analysis.exploration_maps.run import run as run_exploration_maps
+from experiment import trial_render
+from experiment.calibration import make_configured_ir_frame_calibration
+from experiment.config import load_experiment_config
+from experiment.constant_stimuli import TrialSpec
+from experiment.render_logic import ContactGate
+from experiment.trace_store import SCHEMA_VERSION, AttemptDefinition, CursorSample, TraceStore
+
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "experiment" / "configs" / "default.yaml"
+CALIBRATION = make_configured_ir_frame_calibration((1920, 1080))
+SPEC = TrialSpec(level_pct=0.2, comparison_height_mm=12.0, reference_height_mm=10.0, reference_side="left")
+# Down at the start, lifted for frames 30-49 while the cursor stays put, down again 25 mm further right.
+LIFT = dict(
+    path=polyline([(0, 55, 141), (29, 72, 141), (49, 72, 141), (50, 97, 141), (89, 130, 141)], 90),
+    touch={0: True, 30: False, 50: True},
+    end="left",
+)
+
+
+def config(**overrides):
+    return replace(load_experiment_config(CONFIG_PATH), **overrides)
+
+
+def test_gate_trusts_contact_only_after_the_device_has_reported_a_touch():
+    gate = ContactGate()
+    assert gate.finger_down(False) is True and not gate.device_reports_touch  # never reported: assume down
+    assert gate.finger_down(True) is True and gate.device_reports_touch
+    assert gate.finger_down(False) is False  # from now on a released button means a lifted finger
+
+
+def test_samples_carry_contact_and_lifts_become_contact_events():
+    _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, LIFT)
+    contact = [sample.contact for sample in attempt.samples]
+    assert contact[:30] == [True] * 30 and contact[30:50] == [False] * 20 and all(contact[50:])
+    events = [(kind, payload) for _, kind, payload in attempt.events if kind.startswith("contact_")]
+    assert [kind for kind, _ in events] == ["contact_up", "contact_down"]
+    (stats,) = [payload for _, kind, payload in attempt.events if kind == "sample_stats"]
+    assert stats["device_reports_touch"] is True
+
+
+def test_a_device_that_never_reports_touch_records_contact_as_unknown_and_warns_once(capsys):
+    scenario = dict(path=polyline([(0, 55, 141), (40, 90, 141)], 41), end="left")
+    for _ in range(2):
+        _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, scenario)
+        assert all(sample.contact for sample in attempt.samples)
+        assert not [kind for _, kind, _ in attempt.events if kind.startswith("contact_")]
+    assert capsys.readouterr().out.count("has not reported a finger touching the surface") == 1
+    assert not trial_render.CONTACT.device_reports_touch
+
+
+def test_schema_v3_writes_contact_and_upgrades_older_files_in_place(tmp_path):
+    assert SCHEMA_VERSION == 3
+    path = tmp_path / "old_trace.sqlite3"
+    # A schema-1 file: no contact, no is_practice / practice_round.
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE trace_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, participant_id TEXT NOT NULL, started_at TEXT NOT NULL,
+            config_json TEXT NOT NULL, calibration_json TEXT NOT NULL, app_version TEXT NOT NULL);
+        CREATE TABLE attempts (attempt_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+            trial_index INTEGER NOT NULL, attempt_index INTEGER NOT NULL, started_us INTEGER NOT NULL, ended_us INTEGER,
+            level_pct REAL NOT NULL, comparison_height_mm REAL NOT NULL, reference_height_mm REAL NOT NULL,
+            bar_width_mm REAL NOT NULL, reference_side TEXT NOT NULL, is_catch INTEGER NOT NULL, outcome TEXT,
+            response TEXT, response_time_us INTEGER);
+        CREATE TABLE cursor_samples (attempt_id INTEGER NOT NULL, sequence INTEGER NOT NULL, t_us INTEGER NOT NULL,
+            frame_dt_us INTEGER NOT NULL, x_px INTEGER NOT NULL, y_px INTEGER NOT NULL, x_mm REAL NOT NULL,
+            y_mm REAL NOT NULL, speed_mm_s REAL NOT NULL, in_active_area INTEGER NOT NULL, active_side TEXT,
+            signal_on INTEGER NOT NULL, PRIMARY KEY (attempt_id, sequence));
+        INSERT INTO cursor_samples VALUES (99, 0, 0, 0, 1, 2, 0.1, 0.2, 0.0, 1, NULL, 0);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    with TraceStore(path) as store:
+        store.create_session(session_id="S", participant_id="P", started_at="t", config={}, calibration={}, app_version="x")
+        attempt_id = store.start_attempt(AttemptDefinition("S", 1, 1, 0, 0.1, 11.0, 10.0, 10.0, "left", False))
+        store.append_samples(attempt_id, [CursorSample(0, 0, 16_667, 5, 6, 1.0, 2.0, 0.0, True, None, False, contact=False)])
+
+    connection = sqlite3.connect(path)
+    rows = dict(connection.execute("SELECT attempt_id, contact FROM cursor_samples").fetchall())
+    version = connection.execute("SELECT value FROM trace_metadata WHERE key = 'schema_version'").fetchone()[0]
+    practice = connection.execute("SELECT is_practice, practice_round FROM attempts").fetchone()
+    connection.close()
+    assert rows == {99: 1, attempt_id: 0}  # the old sample keeps the implied "finger down"
+    assert version == "3" and practice == (0, 0)
+
+
+def test_heat_maps_use_the_recorded_contact_instead_of_guessing(tmp_path):
+    from experiment.trace_recorder import AsyncTraceRecorder
+
+    import experiment.main as main_module
+
+    cfg = config(render_mode="position")
+    trace_path = tmp_path / "P11_touch_trace.sqlite3"
+    recorder = AsyncTraceRecorder(trace_path)
+    recorder.create_session(
+        session_id="P11_touch", participant_id="P11", started_at="t", config=main_module.config_to_dict(cfg),
+        calibration=CALIBRATION.__dict__, app_version="test",
+    )  # fmt: skip
+    buffer = recorder.start_attempt("1:1", AttemptDefinition("P11_touch", 1, 1, 0, 0.2, 12.0, 10.0, 10.0, "left", False))
+
+    class Forward:
+        """Hands the scripted trial's samples and events to the real recorder."""
+
+        add_sample = buffer.add_sample
+        add_event = buffer.add_event
+        session_elapsed_us = buffer.session_elapsed_us
+        finish = buffer.finish
+
+    import render_harness
+
+    original = render_harness.FakeAttempt
+    render_harness.FakeAttempt = Forward
+    try:
+        run_scripted_trial(cfg, CALIBRATION, SPEC, LIFT)
+    finally:
+        render_harness.FakeAttempt = original
+        assert recorder.close() is None
+
+    out = tmp_path / "maps"
+    assert run_exploration_maps(trace_path, "all", out) == 0
+    with (out / "P11" / "P11_touch" / "trials.csv").open() as file:
+        header, row = (line.strip().split(",") for line in file.readlines())
+    summary = dict(zip(header, row))
+    assert summary["contact_method"] == "contact flag"
+    # 20 frames off the glass, plus the step into the first and out of the last of them.
+    assert float(summary["no_contact_ms"]) == pytest.approx(21 * 1000 / 60, abs=25)

@@ -407,8 +407,21 @@ start of the trial, taken from `time.perf_counter()`):
 | `signal_watchdog` | each time the watchdog switches the signal off | the same |
 | `sample_stats` | once per trial | sample count, interval min / median / p95 / max in ms, number and share of samples whose position had not changed, effective horizon, the scheduler's busy-wait margin, `mode` |
 | `signal_on`, `signal_off` | when the frame-level state changes | as before |
+| `contact_down`, `contact_up` | when the finger touches or leaves the glass | `active_side` |
 
 A trial is not closed until every write returned by the scheduler is in the trace.
+
+**Contact (trace schema 3).** The touch frame reports a finger on the glass as the
+left mouse button held down. `cursor_samples.contact` records it per sample, and
+`contact_down` / `contact_up` events mark the changes. A device that never
+reports touch would otherwise look like a finger that is never down, so contact
+is only trusted once the device has reported a touch at least once in the
+session. Until then `contact` is written as 1 (unknown), and the program prints a
+warning at the end of the first trial. `sample_stats` says which case applied
+(`device_reports_touch`). Recordings from schemas 1 and 2 have no `contact`
+column and still load; opening one for writing adds the newer columns in place.
+`analysis/exploration_maps` uses the column instead of its lift-off estimate
+whenever it is present.
 
 #### Per-trial animation and grid heat map (`analysis/trace_movement.py`)
 

@@ -81,6 +81,12 @@ class Script:
             for x, y in scenario["path"]
         ]
         self.end = scenario["end"]
+        # Optional touch script: {frame: True/False} switches the left button, as the touch frame reports contact.
+        self.touch: dict[int, bool] = scenario.get("touch", {})
+        self.contact = self.touch.get(0, False)
+
+    def get_pressed(self) -> tuple[bool, bool, bool]:
+        return (self.contact, False, False)
 
     def perf_counter(self) -> float:
         return self.times[min(self.frame, len(self.times) - 1)]
@@ -98,12 +104,19 @@ class Script:
         self.frame += 1
 
     def events(self) -> list:
+        events = []
+        if self.frame in self.touch and self.frame > 0 and self.touch[self.frame] != self.contact:
+            self.contact = self.touch[self.frame]
+            kind = pygame.MOUSEBUTTONDOWN if self.contact else pygame.MOUSEBUTTONUP
+            events.append(pygame.event.Event(kind, button=1, pos=self.get_pos()))
+        if self.touch and 0 < self.frame < len(self.positions) and self.positions[self.frame] != self.positions[self.frame - 1]:
+            events.append(pygame.event.Event(pygame.MOUSEMOTION, pos=self.get_pos(), rel=(0, 0), buttons=(int(self.contact), 0, 0)))
         if self.frame < len(self.positions) - 1 or self.end == "timeout":
-            return []
+            return events
         if self.end == "quit":
-            return [pygame.event.Event(pygame.QUIT)]
+            return events + [pygame.event.Event(pygame.QUIT)]
         key = {"left": pygame.K_LEFT, "right": pygame.K_RIGHT, "numpad_right": pygame.K_KP6, "escape": pygame.K_ESCAPE}
-        return [pygame.event.Event(pygame.KEYDOWN, key=key[self.end])]
+        return events + [pygame.event.Event(pygame.KEYDOWN, key=key[self.end])]
 
 
 def connect(instrument: FakeInstrument, cfg):
@@ -125,6 +138,7 @@ def scripted_pygame(script):
     with ExitStack() as stack:
         stack.enter_context(patch.object(trial_module, "time", script))
         stack.enter_context(patch.object(pygame.mouse, "get_pos", script.get_pos))
+        stack.enter_context(patch.object(pygame.mouse, "get_pressed", getattr(script, "get_pressed", lambda: (False,) * 3)))
         stack.enter_context(patch.object(pygame.event, "get", script.events))
         stack.enter_context(patch.object(pygame.display, "flip", lambda: None))
         stack.enter_context(patch.object(pygame.time, "wait", lambda _ms: None))

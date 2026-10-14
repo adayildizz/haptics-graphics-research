@@ -298,15 +298,20 @@ def test_run_can_include_practice_and_reports_an_unknown_participant(tmp_path):
     assert run(trace, "nobody", tmp_path / "none") == 2
 
 
-def test_load_trace_reads_older_schema_and_a_contact_column(tmp_path):
+def test_load_trace_reads_the_contact_column_and_older_schemas_without_it(tmp_path):
     trace = tmp_path / "P01_S1_trace.sqlite3"
     _write_trace(trace)
-    assert all(attempt.contact is None for attempt in load_trace(trace))
+    # Schema v3 writes contact; samples that never set it are "finger down".
+    assert all(attempt.contact is not None and attempt.contact.all() for attempt in load_trace(trace))
 
     connection = sqlite3.connect(trace)
-    connection.execute("ALTER TABLE cursor_samples ADD COLUMN contact INTEGER NOT NULL DEFAULT 1")
     connection.execute("UPDATE cursor_samples SET contact = 0 WHERE sequence < 10")
-    # Schema v1 had no is_practice / practice_round columns.
+    connection.commit()
+    attempts = load_trace(trace)
+    assert [bool(a.contact[:10].any()) for a in attempts] == [False, False, False]
+    assert all(a.contact[10:].all() for a in attempts)
+
+    # Schema v1 had no contact, is_practice or practice_round columns.
     connection.executescript(
         """
         CREATE TABLE attempts_v1 AS
@@ -316,14 +321,13 @@ def test_load_trace_reads_older_schema_and_a_contact_column(tmp_path):
             FROM attempts;
         DROP TABLE attempts;
         ALTER TABLE attempts_v1 RENAME TO attempts;
+        ALTER TABLE cursor_samples DROP COLUMN contact;
         """
     )
     connection.commit()
     connection.close()
-
     attempts = load_trace(trace)
-    assert [bool(a.contact[:10].any()) for a in attempts] == [False, False, False]
-    assert all(a.contact[10:].all() and not a.is_practice for a in attempts)
+    assert all(a.contact is None and not a.is_practice for a in attempts)
 
 
 def test_module_does_not_import_the_experiment_runtime_or_pygame():

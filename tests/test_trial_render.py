@@ -142,6 +142,7 @@ class LiveTrial:
 def live_pygame(live: LiveTrial):
     with ExitStack() as stack:
         stack.enter_context(patch.object(pygame.mouse, "get_pos", live.get_pos))
+        stack.enter_context(patch.object(pygame.mouse, "get_pressed", lambda: (False,) * 3))
         stack.enter_context(patch.object(pygame.event, "get", live.events))
         stack.enter_context(patch.object(pygame.display, "flip", lambda: None))
         stack.enter_context(patch.object(pygame.time, "wait", lambda _ms: None))
@@ -305,6 +306,7 @@ def test_a_signal_failure_aborts_the_session_and_everything_before_it_is_on_disk
         with ExitStack() as stack:
             stack.enter_context(patch.object(trial_module, "time", script))
             stack.enter_context(patch.object(pygame.mouse, "get_pos", script.get_pos))
+            stack.enter_context(patch.object(pygame.mouse, "get_pressed", lambda: (False,) * 3))
             stack.enter_context(patch.object(pygame.event, "get", script.events))
             stack.enter_context(patch.object(pygame.display, "flip", lambda: None))
             stack.enter_context(patch.object(pygame.time, "wait", lambda _ms: None))
