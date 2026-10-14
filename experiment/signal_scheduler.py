@@ -385,15 +385,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     import platform
 
-    print(f"{platform.platform()} · Python {platform.python_version()}")
+    import pygame
+
+    # A session starts the scheduler after pygame.init(), which also sets the system timer resolution on Windows.
+    pygame.init()
+    print(f"{platform.platform()} · Python {platform.python_version()} · pygame {pygame.version.ver}")
     ok = _report("main loop idle (60 Hz)", *run_benchmark(args.seconds, lambda: time.sleep(1 / 60)))
     if not args.no_window:
-        import pygame
-
         from . import display
         from .calibration import make_configured_ir_frame_calibration
 
-        pygame.init()
         screen = display.init_window(fullscreen=False, size=(1280, 720))
         clock = pygame.time.Clock()
         calibration = make_configured_ir_frame_calibration(screen.get_size())
@@ -409,7 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             clock.tick(60)
 
         ok = _report("under the trial's draw loop", *run_benchmark(args.seconds, draw_frame)) and ok
-        pygame.quit()
+    pygame.quit()
     print("PASS: p95 <= 1 ms" if ok else "FAIL: p95 > 1 ms -- report this before running a session")
     return 0 if ok else 1
 
