@@ -11,3 +11,4 @@ trace: if the session did not close cleanly, part of the trace is still in them.
 | Folder | What | Config |
 |---|---|---|
 | `2026-10-30_kalman/` | Render-mode check: predictive, position and kalman mixed within one session, felt breaks reported with the Down arrow | `experiment/configs/kalman_check.yaml` |
+| `2026-10-30_force/` | Contact check: IR frame and force sensor recorded side by side, one run per task (`--label`) | `python -m experiment.contact_probe` |

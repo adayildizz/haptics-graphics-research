@@ -155,6 +155,38 @@ touch events. The summary is also
 saved to `experiment/data/input_probe_<time>.json`. The answers decide whether
 recording a contact flag and sampling per report are worth adding.
 
+### Contact check: IR frame against the force sensor
+
+On the lab rig the IR frame drops contact and moves the cursor while the
+finger stays on the glass (the input check shows touch events dropping
+together with the mouse button, so it is the frame, not Windows). The Nano17
+under the screen measures the load directly. This check records both side by
+side, to decide whether contact should come from the force sensor.
+
+```
+python -m experiment.contact_probe --label still --data-dir measurements/<date>_force [--device Dev1]
+       [--first-channel 0] [--terminal diff|rse|nrse|default] [--range-v 10] [--cal FT12345.cal]
+       [--seconds 30] [--bias-s 3] [--fake]
+python -m analysis.contact_check measurements/<date>_force [--hold-ms 150] [--jump-mm 20] [--out DIR]
+```
+
+The probe starts the force reader process (`experiment/force_daq.py`,
+`NidaqmxForceSource`: the six gauges as one continuous 1 kHz task), asks for
+the hands to be off the screen for `--bias-s` seconds (the unloaded zero and
+its noise), then records every 60 Hz frame for `--seconds` while the screen
+shows the IR state and the load. Without `--cal` the load is the size of the
+change in gauge voltages (V); with the sensor's ATI calibration file
+(`experiment/ati_calibration.py`) it is |Fz| in newtons. It needs the `nidaqmx`
+Python package and NI-DAQmx on the PC; `--fake` runs it without a card.
+
+`analysis/contact_check.py` puts every frame in one of four states (IR and
+force both down; force only, i.e. an IR dropout or a palm on the glass; IR only,
+i.e. a finger in the beams but not on the glass; neither) and reports episode
+lengths, every IR lift sorted by whether the force let go, IR jumps with the
+force held, the load margin of the lightest touches, and what
+`experiment/contact_fusion.py` would do with a given hold time and jump limit.
+Nothing in the trial loop uses the force sensor yet.
+
 ### Safety
 
 The output is switched off when a trial ends, when the session ends, when the
