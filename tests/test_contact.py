@@ -27,7 +27,8 @@ LIFT = dict(
 
 
 def config(**overrides):
-    return replace(load_experiment_config(CONFIG_PATH), **overrides)
+    # These pin the lift rule itself, which the IR glitch filter only delays: with the filter off it must be as before.
+    return replace(load_experiment_config(CONFIG_PATH), **{"ir_filter": False, **overrides})
 
 
 def test_gate_trusts_contact_only_after_the_device_has_reported_a_touch():

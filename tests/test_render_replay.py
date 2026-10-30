@@ -297,7 +297,8 @@ def test_the_replay_takes_lifts_as_the_trial_loop_does(mode):
         touch={0: True, 25: False, 40: True, 62: False, 70: True},
         end="left",
     )
-    cfg = replace(load_experiment_config(CONFIG_PATH), render_mode=mode)
+    # The replay does not run the IR glitch filter yet.
+    cfg = replace(load_experiment_config(CONFIG_PATH), render_mode=mode, ir_filter=False)
     _, attempt, _, _ = run_scripted_trial(cfg, calibration, spec, scenario)
     c = calibration
     heights = (10.0, 12.0)

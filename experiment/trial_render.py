@@ -28,6 +28,18 @@ def reset_contact_gate() -> None:
 
 
 @dataclass(frozen=True)
+class Finger:
+    """One frame's IR report as the renderer takes it: through the glitch filter when ``ir_filter`` is on."""
+
+    pos: tuple[int, int]  # the report's own, or the last accepted one's while a glitch is ignored
+    x_mm: float
+    y_mm: float
+    down: bool  # contact as the renderer takes it
+    reported_down: bool  # the report's contact through ContactGate: what the trace records as ``contact``
+    contact: bool  # the left-button state the device reported
+
+
+@dataclass(frozen=True)
 class FrameDecision:
     signal_on: bool  # the state this frame asks for
     active_side: str | None  # the bar under the finger
@@ -81,6 +93,12 @@ class TrialRenderer:
         self._fps = fps
         self._quantum_mm = max(1.0 / calibration.px_per_mm_x, 1.0 / calibration.px_per_mm_y)
         self._lifted = False
+        self._ir = (
+            rl.IrGlitchFilter(cfg.ir_lift_debounce_ms / 1000.0, cfg.ir_jump_mm, cfg.ir_jump_reanchor_ms / 1000.0)
+            if cfg.ir_filter
+            else None
+        )
+        self._used_pos: tuple[int, int] | None = None
         self._start_afresh()
 
     def _start_afresh(self) -> None:
@@ -107,14 +125,25 @@ class TrialRenderer:
     def error(self) -> BaseException | None:
         return self._signal.error
 
-    def frame(
-        self, now_s: float, pos: tuple[int, int], x_mm: float, y_mm: float, speed_mm_s: float, contact: bool
-    ) -> FrameDecision:
-        """Decide and submit the plan for one frame; ``contact`` is the left-button state the device reports."""
-        finger_down = CONTACT.finger_down(contact)
-        sample = rl.Sample(now_s, x_mm, y_mm)
+    def read(self, now_s: float, pos: tuple[int, int], x_mm: float, y_mm: float, contact: bool) -> Finger:
+        """This frame's IR report as the renderer will take it; ``contact`` is the left-button state reported."""
         self._clock.add(now_s, repeated=pos == self._last_pos)
         self._last_pos = pos
+        reported_down = CONTACT.finger_down(contact)
+        if self._ir is None:
+            return Finger(pos, x_mm, y_mm, reported_down, reported_down, contact)
+        # The time the trace records, so that the replay, filtering the recording, decides exactly alike.
+        reading = self._ir.step(self._us(now_s) / 1_000_000, x_mm, y_mm, reported_down)
+        self._log_glitches(now_s, self._ir.glitches)
+        if not reading.held:
+            self._used_pos = pos
+        assert self._used_pos is not None  # the filter holds only a position it accepted before
+        return Finger(self._used_pos, reading.x_mm, reading.y_mm, reading.down, reported_down, contact)
+
+    def frame(self, now_s: float, finger: Finger, speed_mm_s: float) -> FrameDecision:
+        """Decide and submit the plan for one frame, from what ``read`` made of its IR report."""
+        pos, x_mm, y_mm, finger_down = finger.pos, finger.x_mm, finger.y_mm, finger.down
+        sample = rl.Sample(now_s, x_mm, y_mm)
         touched_down = finger_down and self._lifted
         if touched_down:
             # The cursor sat still while the finger was up and has now jumped: no mode may build on that.
@@ -138,13 +167,16 @@ class TrialRenderer:
         self._previous = sample if finger_down else None
         self._signal.submit(plan)
         self._log(self._signal.drain())
-        self._log_contact(now_s, contact, side)
-        return FrameDecision(plan.on, side, finger_down)
+        self._log_contact(now_s, finger.contact, side)
+        return FrameDecision(plan.on, side, finger.reported_down)
 
     def finish(self, reason: str, now_s: float) -> None:
         """Signal off; every write and the trial's sampling statistics are in the trace before this returns."""
         global _warned_no_touch
         self._log(self._signal.stop_trial(reason))
+        if self._ir is not None:
+            glitch = self._ir.finish(self._us(now_s) / 1_000_000)
+            self._log_glitches(now_s, () if glitch is None else (glitch,))
         if not CONTACT.device_reports_touch and not _warned_no_touch:
             _warned_no_touch = True
             print(
@@ -171,6 +203,18 @@ class TrialRenderer:
             event_type="contact_down" if contact else "contact_up",
             payload={"active_side": side},
         )
+
+    def _log_glitches(self, now_s: float, glitches: tuple[rl.IrGlitch, ...]) -> None:
+        """One event per IR glitch the filter ignored, when it is over."""
+        if self._trace is None:
+            return
+        for glitch in glitches:
+            payload: dict[str, Any] = {"duration_ms": round(1000.0 * glitch.duration_s, 3)}
+            if glitch.distance_mm is not None:
+                payload["distance_mm"] = round(glitch.distance_mm, 3)
+            if glitch.ended:
+                payload["ended"] = glitch.ended
+            self._trace.add_event(t_us=self._us(now_s), event_type=glitch.kind, payload=payload)
 
     def _pixel_side(self, pos: tuple[int, int]) -> str | None:
         if self._layout.left_bar.collidepoint(pos):

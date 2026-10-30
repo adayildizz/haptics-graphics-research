@@ -64,7 +64,9 @@ def run_scenario(name: str, mode: str = "timed_legacy") -> dict:
     """One scripted trial; returns everything the render rule produced."""
     scenario = scenarios()[name]
     cfg = load_experiment_config(CONFIG_PATH)
-    cfg = replace(cfg, render_mode=mode, response_timeout_s=1.2 if scenario["end"] == "timeout" else 30.0)
+    # The recording predates the IR glitch filter, which would reject the 50 mm step of bar_to_bar_jump.
+    timeout_s = 1.2 if scenario["end"] == "timeout" else 30.0
+    cfg = replace(cfg, render_mode=mode, response_timeout_s=timeout_s, ir_filter=False)
     spec = TrialSpec(
         level_pct=0.2,
         comparison_height_mm=12.0,
