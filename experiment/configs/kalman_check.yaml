@@ -1,0 +1,58 @@
+# Render-mode check: does the participant feel the signal break inside a bar, and in which mode?
+#
+# One short session. Every trial runs in one of three render modes, drawn so that each mode gets
+# the same number of trials at every level; the participant is not told which. During a trial the
+# Down arrow (or numpad 2) logs "I felt the signal break" without answering. Left/right answer as
+# usual. Run it with --data-dir measurements/<date>_kalman so the files can be committed.
+#
+# The three modes differ in how often they break the signal inside a bar on the 14 October
+# recordings (replay): predictive 2.2 breaks per second inside a bar, kalman (settings below)
+# 1.2 per second, position none. Predictive and kalman switch earlier at the edges; position is
+# about 1 mm late on the top edge.
+
+base_height_mm: 100.0            # as in the 14 October self-runs
+bar_width_mm: 10.0
+inter_bar_gap_mm: 40.0
+
+delta_max_pct: 0.10              # +-3.3 / 6.7 / 10 %: the 14 October runs were at 100% correct from +-10% up
+n_levels: 7                      # odd -> the 0% midpoint is dropped: six real levels
+include_zero_level: false
+trials_per_level: 6              # 36 trials, 12 per render mode, about 9 minutes
+sweeps_per_block: 1
+catch_trial_pct: 0.0
+
+feedback: false
+n_practice_trials: 0             # no practice block
+break_every_n_trials: 0
+response_timeout_s: 30.0
+max_trial_attempts: 2
+practice_voice_feedback: false
+practice_spoken_feedback: false
+record_main_trace: true
+
+masking_noise: true              # brown noise in the headphones for the whole session
+masking_noise_volume: 0.30
+
+blind_test_mode: true            # no bars on the screen: found by touch only
+
+render_mode: mixed
+mixed_render_modes: [predictive, position, kalman]
+felt_gap_key: true               # Down arrow / numpad 2 = "I felt the signal break"
+predict_window_samples: 3
+predict_horizon_factor: 1.5
+predict_horizon_max_ms: 25.0
+predict_min_speed_mm_s: 5.0
+kalman_accel_psd: 30000.0        # mm²/s³
+kalman_meas_sd_mm: 0.2
+kalman_confidence: 0.9
+latency_compensation_ms: 0.0     # not measured yet
+signal_watchdog_ms: 100.0
+
+carrier_freq_hz: 125.0
+voltage_peak: 4.0
+ir_sample_hz_nominal: 100.0
+
+rng_seed: null
+participant_id: ""
+dominant_hand: ""
+mode: constant_stimuli

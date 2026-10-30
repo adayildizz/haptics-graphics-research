@@ -20,6 +20,14 @@ CONTACT = rl.ContactGate()
 _warned_no_touch = False
 
 
+def trial_mode(cfg: ExperimentConfig, assigned: str | None = None) -> str:
+    """The render mode a trial runs in: its own draw in a mixed session, else the configured one."""
+    if assigned is not None:
+        return assigned
+    # A trial with no draw of its own in a mixed session (practice, staircase) uses the first listed mode.
+    return cfg.mixed_render_modes[0] if cfg.render_mode == rl.MIXED else cfg.render_mode
+
+
 def reset_contact_gate() -> None:
     """Forget what the input device has shown (tests, or a new device)."""
     global CONTACT, _warned_no_touch
@@ -46,8 +54,9 @@ class TrialRenderer:
         trial_start_s: float,
         fps: int,
         trace_attempt: AttemptTraceBuffer | None,
+        mode: str | None = None,
     ) -> None:
-        self.mode = cfg.render_mode
+        self.mode = mode or trial_mode(cfg)
         self._layout = layout
         self._signal = signal
         self._trial_start_s = trial_start_s
@@ -102,6 +111,19 @@ class TrialRenderer:
             )
         elif self.mode == "position":
             self._planner = rl.PositionPlanner(self._nominal)
+        elif self.mode == "kalman":
+            self._planner = rl.KalmanPlanner(
+                self._nominal,
+                accel_psd=cfg.kalman_accel_psd,
+                meas_sd_mm=cfg.kalman_meas_sd_mm,
+                confidence=cfg.kalman_confidence,
+                horizon_factor=cfg.predict_horizon_factor,
+                horizon_max_s=cfg.predict_horizon_max_ms / 1000.0,
+                min_speed_mm_s=cfg.predict_min_speed_mm_s,
+                latency_s=cfg.latency_compensation_ms / 1000.0,
+                nominal_interval_s=1.0 / self._fps,
+                position_quantum_mm=self._quantum_mm,
+            )
 
     @property
     def error(self) -> BaseException | None:

@@ -14,10 +14,10 @@ from . import audio_cues, display, stimulus
 from .calibration import DisplayCalibration
 from .config import ExperimentConfig
 from .constant_stimuli import TrialSpec
-from .input_keys import is_exit_key, response_for_key
+from .input_keys import is_exit_key, is_felt_gap_key, response_for_key
 from .signal_scheduler import SignalScheduler
 from .trace_store import CursorSample
-from .trial_render import LEGACY, TrialRenderer
+from .trial_render import LEGACY, TrialRenderer, trial_mode
 
 if TYPE_CHECKING:
     from .speed_coach import PracticeSpeedCoach
@@ -39,6 +39,7 @@ class TrialResult:
     response_time_s: float
     passes: list[dict[str, Any]] = field(default_factory=list)
     timestamp: str = ""
+    felt_gaps: int = 0  # presses of the felt-gap key during the trial
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class TrialAborted:
     elapsed_s: float
     passes: list[dict[str, Any]] = field(default_factory=list)
     timestamp: str = ""
+    felt_gaps: int = 0
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class TrialTimeout:
     elapsed_s: float
     passes: list[dict[str, Any]] = field(default_factory=list)
     timestamp: str = ""
+    felt_gaps: int = 0
 
 
 def should_time_out(elapsed_s: float, timeout_s: float) -> bool:
@@ -175,7 +178,11 @@ def run_trial(
         speed_coach.reset_trial()
 
     tracker = _PassTracker(max_sample_gap_s=3.0 / cfg.ir_sample_hz_nominal)
-    renderer = TrialRenderer(cfg, calibration, layout, signal, trial_start, fps, trace_attempt)
+    renderer = TrialRenderer(
+        cfg, calibration, layout, signal, trial_start, fps, trace_attempt, mode=trial_mode(cfg, spec.render_mode)
+    )
+    felt_gaps = 0
+    x_mm = y_mm = None  # the last position read, for logging a felt gap
 
     def aborted(reason: str, now: float) -> TrialAborted:
         renderer.finish(reason, now)
@@ -191,6 +198,7 @@ def run_trial(
             elapsed_s=now - trial_start,
             passes=tracker.passes,
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"),
+            felt_gaps=felt_gaps,
         )
 
     while True:
@@ -210,6 +218,22 @@ def run_trial(
             if event.type == pygame.KEYDOWN:
                 if is_exit_key(event.key, pygame):
                     return aborted("exit_key", now)
+                if cfg.felt_gap_key and is_felt_gap_key(event.key, pygame):
+                    felt_gaps += 1
+                    if trace_attempt is not None:
+                        trace_attempt.add_event(
+                            t_us=round((now - trial_start) * 1_000_000),
+                            event_type="felt_gap",
+                            payload={
+                                "mode": renderer.mode,
+                                "x_mm": x_mm,
+                                "y_mm": y_mm,
+                                "signal_on": previous_signal_on,
+                                "contact": contact,
+                                "active_side": previous_side,
+                            },
+                        )
+                    continue
                 response = response_for_key(event.key, pygame)
                 if response is not None:
                     renderer.finish("response", now)
@@ -232,6 +256,7 @@ def run_trial(
                         response_time_s=now - trial_start,
                         passes=tracker.passes,
                         timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        felt_gaps=felt_gaps,
                     )
                     if trace_attempt is not None:
                         t_us = round((now - trial_start) * 1_000_000)
@@ -288,6 +313,7 @@ def run_trial(
                 elapsed_s=elapsed_trial_s,
                 passes=tracker.passes,
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                felt_gaps=felt_gaps,
             )
 
         pos = pygame.mouse.get_pos()
@@ -310,7 +336,7 @@ def run_trial(
         decision = renderer.frame(now, pos, x_mm, y_mm, speed_mm_s, contact)
         signal_on, active_side = decision.signal_on, decision.active_side
         if active_side is not None and active_side != previous_side:
-            commanded_s = stimulus.stimulus_duration(cfg.bar_width_mm, speed_mm_s) if cfg.render_mode == LEGACY else None
+            commanded_s = stimulus.stimulus_duration(cfg.bar_width_mm, speed_mm_s) if renderer.mode == LEGACY else None
             tracker.start(active_side, now, speed_mm_s, commanded_s, elapsed)
         elif active_side is None and previous_side is not None:
             tracker.finish(now)

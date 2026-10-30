@@ -46,3 +46,14 @@ def test_numpad_carries_only_the_two_response_keys():
 
     assert response_for_key(pygame.K_KP4, pygame) == "left"
     assert response_for_key(pygame.K_KP6, pygame) == "right"
+
+
+def test_down_arrow_and_numpad_two_report_a_felt_gap_and_answer_nothing():
+    from experiment.input_keys import is_felt_gap_key
+
+    for key in (pygame.K_DOWN, pygame.K_KP2):
+        assert is_felt_gap_key(key, pygame)
+        assert response_for_key(key, pygame) is None
+        assert not is_continue_key(key, pygame) and not is_exit_key(key, pygame)
+    for key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_KP4, pygame.K_KP6, pygame.K_SPACE):
+        assert not is_felt_gap_key(key, pygame)

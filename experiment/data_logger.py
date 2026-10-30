@@ -29,6 +29,8 @@ TRIAL_FIELDS = [
     "practice_round",
     "response_time_s",
     "passes_json",
+    "render_mode",
+    "felt_gaps",
 ]
 
 # Row-type discriminator. Every trial the participant was shown gets a row;

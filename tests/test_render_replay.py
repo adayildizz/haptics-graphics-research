@@ -78,7 +78,7 @@ def test_upward_exit_through_the_top_edge():
     # Starts inside the left bar and leaves upward at 40 mm/s, then keeps going.
     truth = finger([(0.0, -30.0, 40.0, 0.0)], (72.0, 143.0))
     outcomes = replay(seen_at_60hz(truth, 3), BARS, None, 10.0, Params(), truth=truth)
-    predictive, position, legacy = (outcomes[mode].errors[0] for mode in rl.RENDER_MODES)
+    predictive, position, legacy = (outcomes[mode].errors[0] for mode in ("predictive", "position", "timed_legacy"))
     assert (predictive.edge, predictive.entering) == ("top", False)
     assert abs(predictive.late_mm) < 0.02
     assert 0.0 <= position.late_mm <= 40.0 / HZ + 0.01 and position.height_effect_mm == position.late_mm
@@ -89,7 +89,7 @@ def test_upward_exit_through_the_top_edge():
 def test_downward_entry_through_the_top_edge():
     truth = finger([(0.0, 14.0, 30.0, 0.0)], (122.0, 125.0))  # right bar, top at 133 mm
     outcomes = replay(seen_at_60hz(truth, 7), BARS, None, 10.0, Params(), truth=truth)
-    predictive, position, legacy = (outcomes[mode].errors[0] for mode in rl.RENDER_MODES)
+    predictive, position, legacy = (outcomes[mode].errors[0] for mode in ("predictive", "position", "timed_legacy"))
     assert (predictive.edge, predictive.entering) == ("top", True)
     assert abs(predictive.late_mm) < 0.02
     assert 0.0 <= position.late_mm <= 30.0 / HZ + 0.01
@@ -342,3 +342,28 @@ def test_command_line_reports_lifts_and_reads_a_trace_without_contact_as_always_
         assert (tmp_path / "out_old" / name).read_text() == (tmp_path / "out_v3" / name).read_text()
     assert main([str(lifted)]) == 0
     assert "contact: 1 lift(s), lifted 1.0 s" in capsys.readouterr().out
+
+
+def test_an_off_time_inside_one_visit_is_a_break_not_an_exit_and_a_new_entry():
+    from analysis.render_replay.core import close_breaks
+
+    spans = [(1.0, 2.0), (3.0, 4.0)]
+    intervals = [(0.99, 1.40), (1.41, 2.01), (2.95, 3.5), (3.6, 4.0)]
+    joined, breaks = close_breaks(intervals, spans)
+    assert joined == [(0.99, 2.01), (2.95, 4.0)]
+    assert breaks == pytest.approx([10.0, 100.0])
+    # An off-time that reaches outside the visit is a real exit, not a break.
+    joined, breaks = close_breaks([(0.99, 1.9), (2.1, 3.5)], [(1.0, 2.0), (2.05, 3.4)])
+    assert joined == [(0.99, 1.9), (2.1, 3.5)] and breaks == []
+
+
+def test_every_mode_reports_its_breaks_and_the_time_inside():
+    outcomes = replay_synthetic(Params(), against_finger=True)
+    for mode in rl.RENDER_MODES:
+        inside = sum(by_mode[mode].inside_s for _, by_mode in outcomes)
+        assert inside > 0
+    # The position and timed modes follow the samples, so they never break inside a bar.
+    for mode in ("position", "timed_legacy"):
+        assert all(not by_mode[mode].breaks_ms for _, by_mode in outcomes)
+    rows = summarize(outcomes)
+    assert {row["mode"] for row in rows if str(row["edge"]).startswith("(breaks")} == set(rl.RENDER_MODES)

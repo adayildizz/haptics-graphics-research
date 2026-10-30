@@ -35,6 +35,8 @@ $RECYCLE.BIN/
 # --- Logs and Databases ---
 *.log
 *.sqlite3
+# ...except lab measurements shared through git, traces included (measurements/README.md)
+!measurements/**/*.sqlite3
 
 # --- Experiment GUI local state ---
 experiment/configs/.last_used.yaml

@@ -351,7 +351,7 @@ def test_main_starts_and_closes_the_scheduler_and_names_the_render_mode(monkeypa
     monkeypatch.setenv("SDL_AUDIODRIVER", "dummy")
     monkeypatch.setattr("sys.argv", ["experiment.main", "--config", str(CONFIG_PATH), "--participant", "T1", "--windowed"])
     monkeypatch.setattr(stimulus, "connect_hardware", lambda _cfg: None)  # never reach for the generator
-    monkeypatch.setattr(data_logger, "ensure_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(data_logger, "ensure_data_dir", lambda *_: tmp_path)
     monkeypatch.setattr(signal_scheduler, "exit_cleanly_on_sigterm", lambda: None)
     shown: list[str] = []
     monkeypatch.setattr(main_module, "wait_for_continue_or_exit", lambda _screen, message: shown.append(message) or False)
@@ -369,3 +369,34 @@ def test_main_starts_and_closes_the_scheduler_and_names_the_render_mode(monkeypa
     (config_json,) = connection.execute("SELECT config_json FROM sessions").fetchone()
     connection.close()
     assert json.loads(config_json)["latency_compensation_ms"] == 0.0
+
+
+def test_the_felt_gap_key_is_logged_with_the_mode_and_never_answers():
+    scenario = dict(
+        path=polyline([(0, 55, 140), (40, 90, 140)], 45),
+        end="right",
+        keys={10: pygame.K_DOWN, 20: pygame.K_KP2, 25: pygame.K_DOWN},
+    )
+    result, attempt, _, _ = run_scripted_trial(config(render_mode="position", felt_gap_key=True), CALIBRATION, SPEC, scenario)
+    felt = [payload for _, kind, payload in attempt.events if kind == "felt_gap"]
+    assert result.response == "right" and result.felt_gaps == 3 and len(felt) == 3
+    assert {payload["mode"] for payload in felt} == {"position"}
+    assert all({"x_mm", "y_mm", "signal_on", "contact", "active_side"} <= payload.keys() for payload in felt)
+    assert felt[0]["x_mm"] is not None
+
+
+def test_the_felt_gap_key_does_nothing_unless_switched_on():
+    scenario = dict(path=polyline([(0, 55, 140), (40, 90, 140)], 45), end="right", keys={10: pygame.K_DOWN})
+    result, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, scenario)
+    assert result.felt_gaps == 0 and not [e for e in attempt.events if e[1] == "felt_gap"]
+
+
+@pytest.mark.parametrize("assigned", ["kalman", "position", "predictive"])
+def test_a_mixed_session_runs_each_trial_in_the_mode_it_drew(assigned):
+    scenario = dict(path=polyline([(0, 55, 140), (40, 90, 140)], 45), end="right")
+    spec = replace(SPEC, render_mode=assigned)
+    _, attempt, _, commands = run_scripted_trial(config(render_mode="mixed"), CALIBRATION, spec, scenario)
+    (stats,) = [payload for _, kind, payload in attempt.events if kind == "sample_stats"]
+    assert stats["mode"] == assigned
+    assert {payload["mode"] for _, kind, payload in attempt.events if kind == "signal_write"} == {assigned}
+    assert "OUTP ON" in commands and commands[-1] == "OUTP OFF"
