@@ -11,8 +11,10 @@ the card's clock fixes the spacing, and every read fixes a latest possible time 
 arrived by now"). ``LiveClock`` turns that into times while running; ``fit_sample_times`` does it for a whole
 file afterwards and also removes the slow drift between the card's clock and the computer's.
 
-Only a fake source exists so far. The NI-DAQmx source follows once the card model, the channel wiring and
-the sensor's .cal file are known. Nothing in the experiment imports this module yet.
+Two sources: ``FakeForceSource`` for tests and for checking the computer, and ``NidaqmxForceSource`` for the
+card itself. The NI-DAQmx source needs the card's device name (NI MAX shows it, e.g. ``Dev1``), the first
+analog input the box is wired to, and the terminal configuration. The trial loop does not use this module yet;
+``experiment.contact_probe`` does.
 """
 
 from __future__ import annotations
@@ -163,6 +165,90 @@ class FakeForceSource:
 
     def close(self) -> None:
         self._start_s = None
+
+
+# DAQmx renamed some terminal configurations between versions of the Python package; try each spelling.
+_TERMINAL_NAMES = {
+    "diff": ("DIFF", "DIFFERENTIAL"),
+    "rse": ("RSE",),
+    "nrse": ("NRSE",),
+    "default": ("DEFAULT",),
+}
+
+
+class NidaqmxForceSource:
+    """The Nano17 through ATI's DAQ F/T box and an NI card, sampled on the card's clock with NI-DAQmx.
+
+    ``nidaqmx`` is imported only in ``start``, so the experiment and the tests run on machines without it. The
+    gauges are read as one task, ``ai<first>`` to ``ai<first + channels - 1>``, continuously into the card's
+    buffer; ``read`` takes whatever has arrived, at least ``min_samples``.
+    """
+
+    def __init__(
+        self,
+        device: str = "Dev1",
+        *,
+        first_channel: int = 0,
+        channels: int = CHANNELS,
+        rate_hz: float = RATE_HZ,
+        terminal: str = "diff",
+        range_v: float = 10.0,
+        buffer_s: float = 10.0,
+    ) -> None:
+        if terminal not in _TERMINAL_NAMES:
+            raise ValueError(f"terminal must be one of {sorted(_TERMINAL_NAMES)}, got {terminal!r}")
+        self.device = device
+        self.first_channel = first_channel
+        self.channels = channels
+        self.rate_hz = rate_hz
+        self.terminal = terminal
+        self.range_v = range_v
+        self.buffer_s = buffer_s
+        self._task: Any = None
+
+    @property
+    def physical_channels(self) -> str:
+        return f"{self.device}/ai{self.first_channel}:{self.first_channel + self.channels - 1}"
+
+    def start(self) -> None:
+        import nidaqmx
+        from nidaqmx import constants
+
+        names = _TERMINAL_NAMES[self.terminal]
+        config = next((getattr(constants.TerminalConfiguration, n) for n in names if hasattr(constants.TerminalConfiguration, n)), None)
+        if config is None:
+            raise RuntimeError(f"this nidaqmx has none of {names} in TerminalConfiguration")
+        task = nidaqmx.Task()
+        try:
+            task.ai_channels.add_ai_voltage_chan(
+                self.physical_channels, terminal_config=config, min_val=-self.range_v, max_val=self.range_v
+            )
+            task.timing.cfg_samp_clk_timing(
+                self.rate_hz,
+                sample_mode=constants.AcquisitionType.CONTINUOUS,
+                samps_per_chan=int(self.rate_hz * self.buffer_s),
+            )
+            task.start()
+        except BaseException:
+            task.close()
+            raise
+        self._task = task
+
+    def read(self, min_samples: int, timeout_s: float) -> list[tuple[float, ...]]:
+        available = int(self._task.in_stream.avail_samp_per_chan)
+        data = self._task.read(number_of_samples_per_channel=max(min_samples, available), timeout=timeout_s)
+        if data and not isinstance(data[0], (list, tuple)):
+            data = [[value] for value in data]  # one sample comes back as one value per channel
+        return [tuple(float(v) for v in row) for row in zip(*data)]
+
+    def close(self) -> None:
+        task, self._task = self._task, None
+        if task is None:
+            return
+        try:
+            task.stop()
+        finally:
+            task.close()
 
 
 class LiveClock:

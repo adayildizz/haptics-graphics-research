@@ -299,3 +299,76 @@ def test_the_self_check_reports_its_figures(capsys):
     out = capsys.readouterr().out
     assert code in (0, 1)
     assert "age of the newest value" in out and ("PASS" in out or "FAIL" in out)
+
+
+def _fake_nidaqmx(monkeypatch, *, newer_names: bool = True, available: int = 5):
+    """A stand-in for the ``nidaqmx`` package that records what the source asks of it."""
+    import sys
+    import types
+
+    calls: dict = {}
+
+    class TerminalConfiguration:
+        pass
+
+    for name in (("DIFF", "RSE", "NRSE", "DEFAULT") if newer_names else ("DIFFERENTIAL", "RSE", "NRSE", "DEFAULT")):
+        setattr(TerminalConfiguration, name, name)
+
+    class AcquisitionType:
+        CONTINUOUS = "CONTINUOUS"
+
+    class Task:
+        def __init__(self):
+            self.ai_channels = types.SimpleNamespace(add_ai_voltage_chan=self._add)
+            self.timing = types.SimpleNamespace(cfg_samp_clk_timing=self._timing)
+            self.in_stream = types.SimpleNamespace(avail_samp_per_chan=available)
+            calls["task"] = self
+
+        def _add(self, physical, **kwargs):
+            calls["channels"] = (physical, kwargs)
+
+        def _timing(self, rate, **kwargs):
+            calls["timing"] = (rate, kwargs)
+
+        def start(self):
+            calls["started"] = True
+
+        def read(self, number_of_samples_per_channel, timeout):
+            calls["read"] = number_of_samples_per_channel
+            return [[float(c * 10 + k) for k in range(number_of_samples_per_channel)] for c in range(6)]
+
+        def stop(self):
+            calls["stopped"] = True
+
+        def close(self):
+            calls["closed"] = True
+
+    package = types.ModuleType("nidaqmx")
+    package.Task = Task
+    constants = types.ModuleType("nidaqmx.constants")
+    constants.TerminalConfiguration = TerminalConfiguration
+    constants.AcquisitionType = AcquisitionType
+    package.constants = constants
+    monkeypatch.setitem(sys.modules, "nidaqmx", package)
+    monkeypatch.setitem(sys.modules, "nidaqmx.constants", constants)
+    return calls
+
+
+@pytest.mark.parametrize("newer_names", [True, False])
+def test_the_nidaqmx_source_opens_six_differential_inputs_and_returns_samples_in_order(monkeypatch, newer_names):
+    from experiment.force_daq import NidaqmxForceSource
+
+    calls = _fake_nidaqmx(monkeypatch, newer_names=newer_names)
+    source = NidaqmxForceSource("Dev2", first_channel=8)
+    source.start()
+    physical, kwargs = calls["channels"]
+    assert physical == "Dev2/ai8:13"
+    assert kwargs["terminal_config"] in ("DIFF", "DIFFERENTIAL") and kwargs["min_val"] == -10.0
+    assert calls["timing"][0] == 1000.0 and calls["timing"][1]["sample_mode"] == "CONTINUOUS"
+    rows = source.read(2, 0.5)  # 5 samples are waiting: all of them come back, oldest first
+    assert calls["read"] == 5 and len(rows) == 5
+    assert rows[0] == (0.0, 10.0, 20.0, 30.0, 40.0, 50.0) and rows[4][0] == 4.0
+    source.close()
+    assert calls["stopped"] and calls["closed"]
+    with pytest.raises(ValueError):
+        NidaqmxForceSource(terminal="pseudo")
