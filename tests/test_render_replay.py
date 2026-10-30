@@ -14,11 +14,13 @@ import pytest
 from render_harness import polyline, run_scripted_trial
 
 from analysis.render_replay import pulses, synthetic
-from analysis.render_replay.core import Params, contact_in, evaluate, planner_for, replay, simulate, submitted_plans
-from analysis.render_replay.run import main, replay_synthetic, summarize
+from analysis.render_replay.core import (
+    Params, contact_in, evaluate, filter_ir, planner_for, replay, simulate, submitted_plans,
+)  # fmt: skip
+from analysis.render_replay.run import ir_filter_for, main, replay_synthetic, summarize
 from experiment import render_logic as rl
 from experiment.calibration import make_configured_ir_frame_calibration
-from experiment.config import load_experiment_config
+from experiment.config import config_to_dict, load_experiment_config
 from experiment.constant_stimuli import TrialSpec
 from experiment.demo_trace import ensure_demo_trace
 from experiment.render_logic import Sample
@@ -285,8 +287,10 @@ def test_touching_down_inside_a_bar_switches_on_at_once_with_no_entry_error():
     assert (contact.lifts, contact.touch_starts, contact.lift_ends) == (0, 1, 0)
 
 
+@pytest.mark.parametrize("glitches", [False, True])
+@pytest.mark.parametrize("ir_filter", [True, False])
 @pytest.mark.parametrize("mode", rl.RENDER_MODES)
-def test_the_replay_takes_lifts_as_the_trial_loop_does(mode):
+def test_the_replay_takes_lifts_as_the_trial_loop_does(mode, ir_filter, glitches):
     # The live loop on a scripted trial: lifted inside the left bar, down inside the right one and out of it,
     # lifted again and put down across the left bar. Replaying what it recorded gives the same state at every sample.
     calibration = make_configured_ir_frame_calibration((1920, 1080))
@@ -297,8 +301,11 @@ def test_the_replay_takes_lifts_as_the_trial_loop_does(mode):
         touch={0: True, 25: False, 40: True, 62: False, 70: True},
         end="left",
     )
-    # The replay does not run the IR glitch filter yet.
-    cfg = replace(load_experiment_config(CONFIG_PATH), render_mode=mode, ir_filter=False)
+    if glitches:
+        # IR glitches with the finger on the glass: a 2-frame lift inside the left bar, a 3-frame jump out of the right.
+        scenario["touch"] |= {21: False, 23: True}
+        scenario["path"][42:45] = [(x + 40.0, y) for x, y in scenario["path"][42:45]]
+    cfg = replace(load_experiment_config(CONFIG_PATH), render_mode=mode, ir_filter=ir_filter)
     _, attempt, _, _ = run_scripted_trial(cfg, calibration, spec, scenario)
     c = calibration
     heights = (10.0, 12.0)
@@ -314,6 +321,13 @@ def test_the_replay_takes_lifts_as_the_trial_loop_does(mode):
     samples = [Sample(s.t_us / 1e6, s.x_mm, s.y_mm) for s in attempt.samples]
     down = [s.contact for s in attempt.samples]
     assert not all(down)
+    ir = ir_filter_for(config_to_dict(cfg))
+    assert (ir is not None) == ir_filter
+    if ir is not None:
+        samples, down, _ = filter_ir(samples, down, ir)
+    # The replay arrives at what the renderer recorded that it used.
+    assert [(s.x_mm, s.y_mm) for s in samples] == [(s.used_x_mm, s.used_y_mm) for s in attempt.samples]
+    assert down == [s.used_contact for s in attempt.samples]
     new_planner = partial(planner_for, mode, nominal, pixel, cfg.bar_width_mm, params)
     live = [s.signal_on for s in attempt.samples]
     assert [plan.on for plan in submitted_plans(new_planner, samples, down)] == live

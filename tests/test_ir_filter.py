@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from render_harness import polyline, run_scripted_trial
 
+from analysis.render_replay.run import main
 from experiment.calibration import make_configured_ir_frame_calibration
 from experiment.config import ExperimentConfig, load_experiment_config
 from experiment.constant_stimuli import TrialSpec
+from experiment.demo_trace import ensure_demo_trace
 from experiment.render_logic import IrGlitchFilter
 
 HZ = 60.0
@@ -204,3 +208,20 @@ def test_on_clean_input_the_filter_changes_nothing(mode):
     assert [s.speed_mm_s for s in filtered.samples] == [s.speed_mm_s for s in unfiltered.samples]
     assert not [kind for _, kind, _ in filtered.events if kind.startswith("ir_")]
 
+
+def test_the_replay_filters_a_recording_made_with_the_filter_and_can_force_it(tmp_path, capsys):
+    trace = ensure_demo_trace(tmp_path / "demo_replay_trace.sqlite3")
+    connection = sqlite3.connect(trace)
+    connection.execute("UPDATE cursor_samples SET contact = 0 WHERE attempt_id = 2 AND sequence BETWEEN 100 AND 101")
+    connection.commit()
+    assert main([str(trace)]) == 0  # recorded without the filter: replayed as reported
+    assert "IR glitch filter: off" in (printed := capsys.readouterr().out) and "contact: 1 lift(s)" in printed
+    assert main([str(trace), "--ir-filter", "on"]) == 0
+    printed = capsys.readouterr().out
+    assert "IR glitch filter: on in 4 of 4 trial(s): 1 ir_lift_ignored" in printed and "contact: 0 lift(s)" in printed
+    (config,) = connection.execute("SELECT config_json FROM sessions").fetchone()
+    connection.execute("UPDATE sessions SET config_json = ?", (json.dumps({**json.loads(config), "ir_filter": True}),))
+    connection.commit()
+    connection.close()
+    assert main([str(trace)]) == 0  # recorded with it: replayed through it
+    assert "1 ir_lift_ignored" in capsys.readouterr().out
