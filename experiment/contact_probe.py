@@ -1,8 +1,8 @@
 """Rig check: the IR frame's contact and position and the force sensor's load, recorded side by side.
 
 Run it once per task (still, slide, lifts, hover, palm, ...) with a ``--label``. It first asks for the hands to
-be off the screen for ``--bias-s`` seconds: the gauge voltages then are the unloaded zero (the bias), and their
-spread is the noise the contact threshold is set from. Then it records every frame of the 60 Hz loop (position,
+be off the screen for ``--bias-s`` seconds: the gauge voltages in the quietest part of that time are the unloaded
+zero (the bias), and their spread is the noise the contact threshold is set from. Then it records every frame of the 60 Hz loop (position,
 mouse button, touch events, newest force sample) for ``--seconds``, while the force reader process stores every
 1 kHz sample. The screen shows the IR state and the load live.
 
@@ -113,8 +113,9 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             if phase == "record" and bias is None:
                 if len(bias_volts) < 2:
                     raise RuntimeError("no force samples arrived while measuring the zero level")
-                bias = tuple(statistics.fmean(v[c] for v in bias_volts) for c in range(len(bias_volts[0])))
-                noise = [load_of(v, bias, calibration) for v in bias_volts]
+                quiet = _quietest(bias_volts)  # a hand that comes back early must not set the zero
+                bias = tuple(statistics.fmean(v[c] for v in quiet) for c in range(len(quiet[0])))
+                noise = [load_of(v, bias, calibration) for v in quiet]
                 limits = thresholds_from_noise(noise)
                 detector = HysteresisContact(args.on if args.on is not None else limits.on, args.off if args.off is not None else limits.off)
             load = load_of(sample.volts, bias, calibration) if (sample is not None and bias is not None) else None
@@ -194,6 +195,16 @@ def run(args: argparse.Namespace) -> dict[str, object]:
     stem.with_name(stem.name + "_probe.json").write_text(json.dumps(meta, indent=2))
     meta["stem"] = str(stem)
     return meta
+
+
+def _quietest(samples: list[tuple[float, ...]], share: float = 0.3) -> list[tuple[float, ...]]:
+    """The run of consecutive samples, ``share`` of them, whose gauge voltages vary least."""
+    n = max(2, int(len(samples) * share))
+    def spread(start: int) -> float:
+        chunk = samples[start : start + n]
+        return sum(statistics.pstdev(v[c] for v in chunk) for c in range(len(chunk[0])))
+    best = min(range(0, len(samples) - n + 1), key=spread)
+    return samples[best : best + n]
 
 
 def report(meta: dict[str, object]) -> str:

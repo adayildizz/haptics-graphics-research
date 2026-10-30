@@ -2,8 +2,9 @@
 
     python -m analysis.contact_check FOLDER_OR_FILES [--on X --off Y] [--hold-ms 150] [--jump-mm 20] [--out DIR]
 
-For every run it measures the unloaded noise from all 1 kHz samples of the hands-off phase, sets the force
-thresholds from it (unless given), and then, frame by frame, puts each moment of the recording in one of the
+For every run it takes the zero (the unloaded gauge voltages) and the noise from the quietest half second of the
+hands-off phase, so a hand that comes back early does not spoil them, sets the force thresholds from that noise
+(unless given), and then, frame by frame, puts each moment of the recording in one of the
 four states of ``experiment.contact_fusion``. It reports:
 
 - how long the recording spent in each state, and how long each episode of a state lasted;
@@ -43,6 +44,8 @@ from experiment.contact_fusion import (
 )
 from experiment.force_daq import load_force
 
+QUIET_WINDOW_S = 0.5
+
 
 @dataclass
 class Run:
@@ -54,6 +57,7 @@ class Run:
     y_mm: np.ndarray
     force_t: np.ndarray
     load: np.ndarray  # one per force sample
+    quiet: slice  # the force samples the zero and the noise come from
 
 
 def find_runs(paths: Sequence[Path]) -> list[Path]:
@@ -83,7 +87,11 @@ def load_run(stem: Path) -> Run:
     with stem.with_name(stem.name + "_frames.csv").open() as file:
         frames = [row for row in csv.DictReader(file) if row["phase"] == "record"]
     recording = load_force(stem.with_name(stem.name + "_force.sqlite3"))
-    bias = meta["bias_volts"]
+    force_t = np.array(recording.t_s)
+    volts = np.array(recording.volts)
+    hands_off = int(np.searchsorted(force_t, meta["record_start_s"]))
+    quiet = quietest_window(volts[:hands_off], float(recording.metadata["rate_hz"]))
+    bias = volts[quiet].mean(axis=0).tolist()
     return Run(
         stem,
         meta,
@@ -91,9 +99,18 @@ def load_run(stem: Path) -> Run:
         np.array([r["pressed"] == "1" for r in frames]),
         np.array([float(r["x_mm"]) for r in frames]),
         np.array([float(r["y_mm"]) for r in frames]),
-        np.array(recording.t_s),
-        np.array([load_of(v, bias, calibration) for v in recording.volts]),
+        force_t,
+        np.array([load_of(v, bias, calibration) for v in volts]),
+        quiet,
     )
+
+
+def quietest_window(volts: np.ndarray, rate_hz: float, window_s: float = QUIET_WINDOW_S) -> slice:
+    """The stretch of ``window_s`` with the smallest spread of the gauge voltages."""
+    n = min(len(volts), max(2, int(window_s * rate_hz)))
+    starts = range(0, len(volts) - n + 1, max(1, n // 10))
+    best = min(starts, key=lambda s: float(volts[s : s + n].std(axis=0).sum()))
+    return slice(best, best + n)
 
 
 def force_down_at_frames(run: Run, on: float, off: float) -> np.ndarray:
@@ -112,7 +129,7 @@ def _stats_ms(durations_s: Sequence[float]) -> dict[str, float]:
 
 
 def analyse(run: Run, on: float | None = None, off: float | None = None, hold_ms: float = 150.0, jump_mm: float = 20.0) -> dict:
-    unloaded = run.load[run.force_t < run.meta["record_start_s"]]
+    unloaded = run.load[run.quiet]
     limits = thresholds_from_noise(unloaded.tolist())
     on = limits.on if on is None else on
     off = limits.off if off is None else off

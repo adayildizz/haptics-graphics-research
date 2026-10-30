@@ -74,7 +74,7 @@ def test_the_check_sorts_ir_lifts_and_jumps_by_what_the_force_did(tmp_path):
     stem = _write_run(tmp_path, np.random.default_rng(3))
     assert find_runs([tmp_path]) == [stem]
     result = analyse(load_run(stem), hold_ms=150.0, jump_mm=20.0)
-    assert result["noise"]["samples"] == pytest.approx(BIAS_S * RATE, abs=5)
+    assert result["noise"]["samples"] == 500  # the quietest half second of the hands-off phase
     assert 0.0 < result["thresholds"]["off"] < result["thresholds"]["on"] < 0.5
     lifts = result["ir_lifts"]
     assert lifts["false"]["n"] == 1 and lifts["false"]["median_ms"] == pytest.approx(100, abs=20)
@@ -110,3 +110,13 @@ def test_the_probe_records_both_sources_with_the_fake_card(monkeypatch, tmp_path
     (stem,) = find_runs([tmp_path])
     assert load_run(stem).frame_t.size > 5
     assert "Seconds by state" in contact_probe.report(meta)
+
+
+def test_the_zero_comes_from_the_quietest_part_of_the_hands_off_phase(tmp_path):
+    from analysis.contact_check import quietest_window
+
+    rng = np.random.default_rng(5)
+    volts = np.r_[rng.normal(0, 0.003, (500, 6)), rng.normal(0.4, 0.2, (500, 6))]  # a hand comes back early
+    window = quietest_window(volts, RATE)
+    assert window.stop <= 550 and window.stop - window.start == 500
+
