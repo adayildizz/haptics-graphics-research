@@ -107,18 +107,11 @@ class ExperimentConfig:
     voltage_peak: float = 4.0
     ir_sample_hz_nominal: float = 100.0
 
-    # Staircase pilot mode (only used when mode == "staircase_pilot")
-    staircase_dh_start_pct: float = 2.0
-    staircase_dh_min_pct: float = 0.5
-    staircase_dh_step_pct: float = 0.1
-    staircase_n_reversals: int = 12
-    staircase_n_reversals_averaged: int = 8
-
     # Bookkeeping
     rng_seed: int | None = None
     participant_id: str = ""
     dominant_hand: str = ""  # "left" | "right" | "" (not recorded)
-    mode: str = "constant_stimuli"  # or "staircase_pilot"
+    mode: str = "constant_stimuli"  # the only mode; kept so existing configs that name it still load
 
     def __post_init__(self) -> None:
         if self.inter_bar_gap_mm < 3.0:
@@ -162,7 +155,9 @@ class ExperimentConfig:
             raise ValueError("signal_watchdog_ms must be > 0")
         if self.dominant_hand not in ("", "left", "right"):
             raise ValueError("dominant_hand must be 'left', 'right', or empty")
-        if self.mode not in ("constant_stimuli", "staircase_pilot"):
+        if self.mode == "staircase_pilot":
+            raise ValueError("mode 'staircase_pilot' was removed; only 'constant_stimuli' is left")
+        if self.mode != "constant_stimuli":
             raise ValueError(f"unknown mode: {self.mode!r}")
 
 
@@ -182,9 +177,22 @@ def _load_raw_config(path: Path) -> dict[str, Any]:
     raise ValueError(f"unsupported config format: {path.suffix}")
 
 
+REMOVED_KEYS = frozenset(
+    {
+        "staircase_dh_start_pct",
+        "staircase_dh_min_pct",
+        "staircase_dh_step_pct",
+        "staircase_n_reversals",
+        "staircase_n_reversals_averaged",
+    }
+)
+
+
 def load_experiment_config(path: str | Path) -> ExperimentConfig:
     """Load an ``ExperimentConfig`` from a YAML or TOML file."""
     raw = _load_raw_config(Path(path))
+    # The staircase pilot's settings were removed; configs the GUI saved before still carry them.
+    raw = {key: value for key, value in raw.items() if key not in REMOVED_KEYS}
     known = {f.name for f in fields(ExperimentConfig)}
     unknown = set(raw) - known
     if unknown:

@@ -41,10 +41,6 @@ Catch trials are placed one per block, at a random position inside it, for the s
 
 Both bars are rendered simultaneously on a split screen. Bar interior = signal ON, exterior = OFF.
 
-### Pilot mode
-
-`mode: staircase_pilot` runs the original 1-up/2-down adaptive staircase (`staircase.py`) at one base height, to locate the approximate JND before committing to a `delta_max_pct` range for constant stimuli. At the end it prints the pilot JND and warns if it exceeds `delta_max_pct / 1.5` (range likely too narrow).
-
 ## Rendering Method
 
 The signal is on inside a bar and off outside it. `render_mode` selects how the
@@ -279,10 +275,9 @@ leave it `false` for sighted-guided piloting and rig checks.
 
 ```
 experiment/
-├── main.py              # Entry point; mode dispatch (constant_stimuli / staircase_pilot / --dry-run)
+├── main.py              # Entry point: the constant-stimuli session, or --dry-run
 ├── config.py            # Rig constants + ExperimentConfig (the single design-parameter source)
 ├── constant_stimuli.py  # Level generation + trial scheduling (no pygame dependency)
-├── staircase.py         # Staircase algorithm for pilot mode (no pygame dependency)
 ├── stimulus.py          # Generator connection and the VISA write helpers
 ├── render_logic.py      # Pure render decisions: bars, velocity, predictive plans, top-edge cue (no pygame, no VISA)
 ├── signal_scheduler.py  # The one thread that switches the output; watchdog; timing benchmark
@@ -291,7 +286,7 @@ experiment/
 ├── trial.py             # Single trial logic, per-pass logging
 ├── display.py           # Pygame UI and screen layout
 ├── data_logger.py       # CSV/JSON logging
-├── configs/             # Example YAML configs (default.yaml, pilot.yaml)
+├── configs/             # Example YAML configs (default.yaml)
 └── data/                # Output directory
 
 analysis/
@@ -342,14 +337,13 @@ blind_test_mode: false   # true -> hide bars, locate them by touch only (no visu
 rng_seed: null           # null -> random, but the resolved seed is always logged
 participant_id: ""
 dominant_hand: ""        # "left" | "right": the exploring hand; arrow keys go under the other
-mode: constant_stimuli   # or staircase_pilot
+mode: constant_stimuli   # the only mode
 ```
 
 Run with:
 
 ```
 python -m experiment.main --config experiment/configs/default.yaml --participant P01
-python -m experiment.main --config experiment/configs/pilot.yaml --participant P01   # pilot mode
 python -m experiment.main --config experiment/configs/default.yaml --dry-run         # ideal-observer sanity check, no pygame/hardware
 ```
 
@@ -401,8 +395,7 @@ With `record_main_trace: true`, each constant-stimuli session also creates
 `experiment/data/<session_id>_trace.sqlite3`. It records every attempt of
 every **practice and main-block** trial, including attempts that end in timeout
 or abort; practice attempts are tagged `is_practice = 1` with their
-`practice_round`, main-block attempts have `is_practice = 0`. Staircase-pilot
-sessions are not recorded. Cursor samples (screen px and surface mm, speed,
+`practice_round`, main-block attempts have `is_practice = 0`. Cursor samples (screen px and surface mm, speed,
 side, signal state, ~60 Hz) are accumulated in small in-memory batches and
 SQLite writes run on a dedicated worker thread, so the real-time trial loop
 never performs disk I/O. The trace is intended for the offline replay,
