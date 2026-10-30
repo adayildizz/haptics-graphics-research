@@ -1,4 +1,4 @@
-"""Pure render decisions: bar geometry, finger velocity, and when the signal should switch."""
+"""Pure render decisions: bar geometry, finger velocity, when the signal should switch, and when a cue pulse fires."""
 
 # Standard library only, and nothing from this package: analysis tools replay recordings through it.
 
@@ -69,6 +69,21 @@ class EdgeCrossing:
     entering: bool
     x_mm: float
     y_mm: float
+
+
+@dataclass(frozen=True)
+class TopCrossing:
+    """The finger's path crossing a bar's top line within the corner tolerance, and what the cue made of it."""
+
+    t_s: float  # the sample that showed the crossing; a pulse fires here
+    bar: str
+    direction: str  # "entering": downward, into the bar's height; "leaving": upward, out of it
+    t_cross_s: float  # interpolated on the straight step from the previous sample
+    x_cross_mm: float
+    y_cross_mm: float  # the bar's top
+    late_mm: float  # beyond the top line at ``t_s`` in the direction of travel: below it entering, above it leaving
+    outcome: str  # "pulse", or what stopped one: "disarmed", "interval", or "jump" when only the jump guard did
+    on_jump: bool = False  # seen on a step longer than the jump guard, which is taken as a lift and a touchdown
 
 
 def nominal_bars(
@@ -407,3 +422,126 @@ class LegacyPlanner:
             edge = "timer"
         self._previous = sample
         return Plan(sample.t_s, on, bar, edge, (), sample.x_mm, sample.y_mm)
+
+
+CUE_DIRECTIONS = ("entering", "leaving")
+
+
+def distance_to_top(x_mm: float, y_mm: float, bar: Rect, corner_mm: float) -> float:
+    """Shortest distance from a point to the bar's top edge, extended by ``corner_mm`` beyond each side."""
+    dx = max(bar.x0 - corner_mm - x_mm, 0.0, x_mm - (bar.x1 + corner_mm))
+    return math.hypot(dx, y_mm - bar.y_top)
+
+
+def top_line_crossing(previous: Sample, current: Sample, y_top: float) -> tuple[float, bool] | None:
+    """(fraction of the step, entering) where the straight step crosses the line y = ``y_top``, or None."""
+    # On the line counts as below it, as a bar's top row is inside the bar.
+    above_before, above_now = previous.y_mm < y_top, current.y_mm < y_top
+    if above_before == above_now:
+        return None
+    return (y_top - previous.y_mm) / (current.y_mm - previous.y_mm), above_before
+
+
+class TopEdgeCue:
+    """When a vibration pulse fires: at the sample that shows the finger has crossed a bar's top edge.
+
+    Detected on the straight step between two samples, never predicted, so a pulse can be late but is never for a
+    crossing that did not happen. Downward entries and upward exits both fire, tagged with their direction. The top
+    edge counts ``corner_mm`` beyond each side of the bar, so a pass over a top corner fires; leaving through a
+    side without crossing the top line does not. A bar that fired stays disarmed until the finger is ``rearm_mm``
+    from its extended top edge. A step longer than ``jump_mm`` is taken as a lift and a touchdown, not a crossing.
+    Pulses are ``min_interval_s`` apart at least, whichever bar they are for: there is one actuator.
+    """
+
+    def __init__(
+        self,
+        bars: Sequence[Rect],
+        *,
+        rearm_mm: float = 3.0,
+        corner_mm: float = 1.0,
+        jump_mm: float = 20.0,
+        min_interval_s: float = 0.1,
+    ) -> None:
+        if min_interval_s <= 0.0:
+            raise ValueError("min_interval_s must be positive: one actuator gives one pulse at a time")
+        self.bars = tuple(bars)
+        self.rearm_mm = rearm_mm
+        self.corner_mm = corner_mm
+        self.jump_mm = jump_mm
+        self.min_interval_s = min_interval_s
+        self.armed = {bar.name: False for bar in self.bars}
+        self.crossings: tuple[TopCrossing, ...] = ()  # every top crossing on the latest step, pulse or not
+        self.jumped = False  # the latest step was longer than ``jump_mm``
+        self._previous: Sample | None = None  # the latest sample, while the finger is down
+        self._last_pulse_s = -math.inf
+
+    def step(self, sample: Sample, down: bool = True) -> TopCrossing | None:
+        """The pulse to fire at this sample, if any; ``down`` is whether the finger is on the glass."""
+        previous, self._previous = self._previous, sample if down else None
+        self.crossings, self.jumped = (), False
+        if not down:
+            return None
+        if previous is None:
+            self._touch_down(sample)
+            return None
+        self.jumped = math.hypot(sample.x_mm - previous.x_mm, sample.y_mm - previous.y_mm) > self.jump_mm
+        found, pulse = [], None
+        last_s = self._last_pulse_s
+        for fraction, bar, entering, x_mm in self._top_crossings(previous, sample):
+            if not self.armed[bar.name]:
+                outcome = "disarmed"
+            elif sample.t_s - last_s < self.min_interval_s:
+                outcome = "interval"
+            else:
+                # On a jump, still note that it would have fired, for the analysis; nothing fires.
+                outcome = "jump" if self.jumped else "pulse"
+                last_s = sample.t_s
+            late = sample.y_mm - bar.y_top if entering else bar.y_top - sample.y_mm
+            crossing = TopCrossing(
+                sample.t_s,
+                bar.name,
+                CUE_DIRECTIONS[0] if entering else CUE_DIRECTIONS[1],
+                previous.t_s + fraction * (sample.t_s - previous.t_s),
+                x_mm,
+                bar.y_top,
+                late,
+                outcome,
+                self.jumped,
+            )
+            found.append(crossing)
+            if outcome == "pulse":
+                pulse = crossing
+                self.armed[bar.name] = False
+                self._last_pulse_s = sample.t_s
+        self.crossings = tuple(found)
+        if self.jumped:
+            self._touch_down(sample)
+        else:
+            for bar in self.bars:
+                self.armed[bar.name] = self.armed[bar.name] or self._far(sample, bar)
+        return pulse
+
+    def _far(self, sample: Sample, bar: Rect) -> bool:
+        return distance_to_top(sample.x_mm, sample.y_mm, bar, self.corner_mm) >= self.rearm_mm
+
+    def _touch_down(self, sample: Sample) -> None:
+        """At the first sample and every touchdown, armed if and only if the finger is far enough from the edge."""
+        for bar in self.bars:
+            self.armed[bar.name] = self._far(sample, bar)
+
+    def _top_crossings(self, previous: Sample, current: Sample) -> list[tuple[float, Rect, bool, float]]:
+        """(fraction, bar, entering, x) for every top line the step crosses within a bar's extended top edge."""
+        found = []
+        for y_top in dict.fromkeys(bar.y_top for bar in self.bars):
+            crossed = top_line_crossing(previous, current, y_top)
+            if crossed is None:
+                continue
+            fraction, entering = crossed
+            x_mm = previous.x_mm + fraction * (current.x_mm - previous.x_mm)
+            near = [b for b in self.bars if b.y_top == y_top and b.x0 - self.corner_mm <= x_mm < b.x1 + self.corner_mm]
+            if near:
+                # One crossing gives one pulse at most. Two extended edges overlap only on one line (equal heights,
+                # gap under twice the tolerance); the crossing is then the nearer bar's.
+                bar = min(near, key=lambda b: max(b.x0 - x_mm, 0.0, x_mm - b.x1))
+                found.append((fraction, bar, entering, x_mm))
+        return sorted(found, key=lambda crossing: crossing[0])
