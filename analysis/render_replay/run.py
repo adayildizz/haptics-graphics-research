@@ -1,4 +1,4 @@
-"""Command line: edge errors of the three render modes on a recorded or synthetic session."""
+"""Command line: edge errors of the three render modes on a recorded or synthetic session; the top-edge cue sweep."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from analysis.exploration_maps.trace_io import Attempt, find_traces, load_trace
 from experiment import render_logic as rl
 from experiment.render_logic import Rect, Sample
 
-from . import synthetic
+from . import pulses, synthetic
 from .core import Contact, Outcome, Params, contact_in, replay
 
 CATEGORIES = (
@@ -214,12 +214,56 @@ def write_csvs(out_dir: Path, name: str, results: Sequence[tuple[str, dict[str, 
         writer.writerows(rows)
 
 
+def _block(attempt: Attempt) -> str:
+    return "practice" if attempt.is_practice else "catch" if attempt.is_catch else "main"
+
+
+def pulse_sweep(paths: Sequence[Path], settings: Sequence[pulses.Setting], out_dir: Path | None) -> int:
+    """The top-edge cue over every recorded attempt, for each setting; with and without contact apart."""
+    trials = [
+        pulses.CueTrial(trial.label, _block(trial.attempt), trial.samples, trial.down, trial.nominal)
+        for path in paths
+        for trial in recorded_trials(path)
+    ]
+    if not trials:
+        print(f"no recorded trials under {', '.join(str(path) for path in paths)}")
+        return 2
+    groups = (
+        ("contact", "Recordings with contact (schema 3)", [t for t in trials if t.down is not None]),
+        (
+            "no_contact",
+            "Recordings without a contact column (schemas 1 and 2): taken as on the glass throughout, so only the "
+            "jump guard separates lifts",
+            [t for t in trials if t.down is None],
+        ),
+    )
+    for name, title, chosen in groups:
+        if not chosen:
+            continue
+        swept = pulses.sweep(chosen, settings)
+        rows = [pulses.summarize(setting, chosen, results) for setting, results in swept]
+        sessions = len({trial.label.split()[0] for trial in chosen})
+        print(pulses.format_sweep(f"{title}\n  {len(chosen)} trial(s) from {sessions} session(s)", rows))
+        print()
+        if out_dir is not None:
+            pulses.write_csvs(out_dir, f"pulses_{name}", swept, rows)
+    for caveat in pulses.CAVEATS:
+        print(f"Note: {caveat}")
+    return 0
+
+
+def _mm_list(text: str) -> tuple[float, ...]:
+    return tuple(float(value) for value in text.split(","))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m analysis.render_replay",
         description="Where each render mode would have switched the signal, against the true edge crossings.",
     )
-    parser.add_argument("data", type=Path, nargs="?", help="A *_trace.sqlite3 file or a folder of them.")
+    parser.add_argument(
+        "data", type=Path, nargs="*", help="A *_trace.sqlite3 file or a folder of them; --pulses takes several."
+    )
     parser.add_argument("--synthetic", action="store_true", help="Use the built-in synthetic session instead.")
     parser.add_argument("--out", type=Path, default=None, help="Folder for the CSV files (default: none written).")
     parser.add_argument("--window", type=int, default=3)
@@ -227,9 +271,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--horizon-max-ms", type=float, default=25.0)
     parser.add_argument("--min-speed", type=float, default=5.0)
     parser.add_argument("--latency-ms", type=float, default=0.0)
+    cue = parser.add_argument_group("top-edge cue", "--pulses sweeps the cue's parameters instead of the render modes")
+    cue.add_argument("--pulses", action="store_true", help="Sweep the top-edge cue on the recorded traces.")
+    cue.add_argument("--rearm", type=_mm_list, default=pulses.REARM_MM, help="re-arm distances d, mm, comma-separated")
+    cue.add_argument("--corner", type=_mm_list, default=pulses.CORNER_MM, help="corner tolerances c, mm")
+    cue.add_argument("--jump", type=_mm_list, default=pulses.JUMP_MM, help="jump guards J, mm")
+    cue.add_argument("--min-interval-ms", type=float, default=pulses.MIN_INTERVAL_MS, help="between any two pulses")
     args = parser.parse_args(argv)
-    if not args.synthetic and args.data is None:
+    if args.pulses:
+        if args.synthetic or not args.data:
+            parser.error("--pulses needs recorded traces")
+        settings = pulses.grid(args.rearm, args.corner, args.jump, args.min_interval_ms)
+        return pulse_sweep(args.data, settings, args.out)
+    if not args.synthetic and not args.data:
         parser.error("give a trace file or folder, or --synthetic")
+    if len(args.data) > 1:
+        parser.error("give one trace file or folder; only --pulses takes several")
+    data = args.data[0] if args.data else None
     params = Params(args.window, args.horizon_factor, args.horizon_max_ms, args.min_speed, args.latency_ms)
 
     reports: list[tuple[str, str, list[tuple[str, dict[str, Outcome]]]]] = []
@@ -237,11 +295,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         reports.append(("synthetic_vs_recording", "Synthetic session, judged as a recording would be (straight lines between its samples)", replay_synthetic(params, against_finger=False)))
         reports.append(("synthetic_vs_finger", "Synthetic session, judged against the finger path that produced it", replay_synthetic(params, against_finger=True)))
     else:
-        results, contact = replay_trace(args.data, params)
+        results, contact = replay_trace(data, params)
         if not results:
-            print(f"no recorded trials under {args.data}")
+            print(f"no recorded trials under {data}")
             return 2
-        title = f"{args.data.name}: {len(results)} recorded trial(s)\n{format_contact(contact)}"
+        title = f"{data.name}: {len(results)} recorded trial(s)\n{format_contact(contact)}"
         reports.append(("recording", title, results))
     for name, title, results in reports:
         print(format_table(title, summarize(results)))

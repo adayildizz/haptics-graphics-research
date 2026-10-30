@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from render_harness import polyline, run_scripted_trial
 
-from analysis.render_replay import synthetic
+from analysis.render_replay import pulses, synthetic
 from analysis.render_replay.core import Params, contact_in, evaluate, planner_for, replay, simulate, submitted_plans
 from analysis.render_replay.run import main, replay_synthetic, summarize
 from experiment import render_logic as rl
@@ -342,3 +342,82 @@ def test_command_line_reports_lifts_and_reads_a_trace_without_contact_as_always_
         assert (tmp_path / "out_old" / name).read_text() == (tmp_path / "out_v3" / name).read_text()
     assert main([str(lifted)]) == 0
     assert "contact: 1 lift(s), lifted 1.0 s" in capsys.readouterr().out
+
+
+def cue_trial(points, hz=20.0, down=None, block="main", setting=pulses.Setting(3.0, 1.0, 20.0)):
+    samples = [Sample(frame / hz, x, y) for frame, (x, y) in enumerate(points)]
+    return pulses.cue_trial(pulses.CueTrial("t", block, samples, down, BARS), setting)
+
+
+def fired(result) -> list[tuple[str, str]]:
+    return [(e.crossing.bar, e.crossing.direction) for e in result.events if e.crossing.outcome == "pulse"]
+
+
+def test_pulses_take_lifts_from_the_recorded_contact():
+    # Down into the left bar, lifted while the cursor sits there, put down 7 mm above the top and down again.
+    path = polyline([(0, 72, 128), (10, 72, 140), (20, 72, 140), (21, 72, 128), (41, 72, 140)], 42)
+    samples, down = recording(path, {11: False, 21: True})
+    trial = pulses.CueTrial("t", "main", samples, down, BARS)
+    result = pulses.cue_trial(trial, pulses.Setting(3.0, 1.0, 20.0))
+    assert fired(result) == [("left", "entering"), ("left", "entering")]
+    # Without contact the 12 mm jump back up is a step like any other, and it crosses the top on the way.
+    unknown = pulses.cue_trial(replace(trial, down=None), pulses.Setting(3.0, 1.0, 20.0))
+    assert fired(unknown) == [("left", "entering"), ("left", "leaving"), ("left", "entering")]
+    assert unknown.jumps == 0
+    assert pulses.cue_trial(replace(trial, down=None), pulses.Setting(3.0, 1.0, 10.0)).jumps == 1
+
+
+def test_pulse_events_measure_the_path_since_the_pulse_that_disarmed_the_bar_and_chatter():
+    # In, 1 mm further, back up through the top (disarmed: 2 mm below it), up 5 mm, and in again 200 ms later.
+    result = cue_trial([(72, 130), (72, 136), (72, 137), (72, 134), (72, 130), (72, 136)])
+    first, missed, again = result.events
+    assert (first.crossing.outcome, missed.crossing.outcome, again.crossing.outcome) == ("pulse", "disarmed", "pulse")
+    assert missed.after_pulse_mm == pytest.approx(3.0)  # 1 mm down to 137, 2 mm back up to the top
+    assert missed.after_pulse_ms == pytest.approx(1000.0 * (0.10 + 0.05 * 2 / 3 - 0.05))
+    assert not first.chatter and again.chatter and all(e.own_edge for e in result.events)
+    # Disarmed by the touchdown rather than by a pulse: nothing to measure from.
+    landed = cue_trial([(72, 136), (72, 133)])
+    assert [(e.crossing.outcome, e.after_pulse_mm) for e in landed.events] == [("disarmed", None)]
+
+
+def test_pulse_summary_counts_blocks_tolerance_pulses_and_jumps():
+    setting = pulses.Setting(3.0, 1.0, 20.0)
+    down_through = [(72, 130), (72, 136)]
+    corner = [(72.5, 130), (74.5, 132), (76.5, 134), (78.5, 136)]  # crosses the top line at x = 77.5, beside the bar
+    jump = [(72, 110), (72, 136)]  # 26 mm in one frame across the top
+    trials = [
+        pulses.CueTrial("a", "main", [Sample(k / 20, x, y) for k, (x, y) in enumerate(down_through)], None, BARS),
+        pulses.CueTrial("b", "main", [Sample(k / 20, x, y) for k, (x, y) in enumerate(corner)], None, BARS),
+        pulses.CueTrial("c", "catch", [Sample(k / 20, x, y) for k, (x, y) in enumerate(jump)], None, BARS),
+    ]
+    row = pulses.summarize(setting, trials, [pulses.cue_trial(trial, setting) for trial in trials])
+    assert (row["trials_main"], row["pulses_per_trial_main"]) == (2, 1.0)
+    assert (row["trials_catch"], row["pulses_per_trial_catch"], row["pulses_per_trial_practice"]) == (1, 0.0, "")
+    assert (row["top_crossings"], row["top_crossings_pulsed"], row["pulses_corner_only"]) == (1, 1, 1)
+    assert (row["jumps"], row["jumps_crossing"], row["jumps_would_fire"]) == (1, 1, 1)
+    assert (row["pulses_entering"], row["pulses_leaving"]) == (2, 0)
+    assert row["late_entering_median_mm"] == 1.0  # both 1 mm below the top
+
+
+def test_command_line_sweeps_the_top_edge_cue_with_and_without_contact(tmp_path, capsys):
+    trace = ensure_demo_trace(tmp_path / "demo_replay_trace.sqlite3")
+    (tmp_path / "old").mkdir()
+    old = Path(shutil.copy(trace, tmp_path / "old" / "demo_trace.sqlite3"))
+    connection = sqlite3.connect(old)
+    connection.execute("ALTER TABLE cursor_samples DROP COLUMN contact")
+    connection.commit()
+    connection.close()
+    grid = ["--rearm", "2,3", "--corner", "1", "--jump", "20"]
+    assert main(["--pulses", str(trace), str(old), *grid, "--out", str(tmp_path / "out")]) == 0
+    printed = capsys.readouterr().out
+    assert "Recordings with contact (schema 3)" in printed and "without a contact column" in printed
+    assert printed.count("Note:") == len(pulses.CAVEATS)
+    with (tmp_path / "out" / "pulses_contact_sweep.csv").open() as file:
+        rows = list(csv.DictReader(file))
+    settings = [(row["rearm_mm"], row["corner_mm"], row["jump_mm"]) for row in rows]
+    assert settings == [("2.0", "1.0", "20.0"), ("3.0", "1.0", "20.0")]
+    assert (tmp_path / "out" / "pulses_no_contact_events.csv").exists()
+    with pytest.raises(SystemExit):
+        main(["--pulses"])
+    with pytest.raises(SystemExit):
+        main([str(trace), str(old)])  # the edge-error replay takes one
