@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import csv
+import shutil
+import sqlite3
 import subprocess
 import sys
+from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import pytest
+from render_harness import polyline, run_scripted_trial
 
 from analysis.render_replay import synthetic
-from analysis.render_replay.core import Params, evaluate, replay
+from analysis.render_replay.core import Params, contact_in, evaluate, planner_for, replay, simulate, submitted_plans
 from analysis.render_replay.run import main, replay_synthetic, summarize
 from experiment import render_logic as rl
+from experiment.calibration import make_configured_ir_frame_calibration
+from experiment.config import load_experiment_config
+from experiment.constant_stimuli import TrialSpec
 from experiment.demo_trace import ensure_demo_trace
 from experiment.render_logic import Sample
 
 HZ = 60.0
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "experiment" / "configs" / "default.yaml"
 BARS = rl.nominal_bars(194.0, 145.0, 40.0, 10.0, 10.0, 12.0)  # left 67-77 top 135, right 117-127 top 133
 LEFT = BARS[0]
 
@@ -205,3 +214,131 @@ def test_tool_uses_only_the_pure_render_module_from_the_experiment_package():
     repo_root = Path(__file__).resolve().parent.parent
     result = subprocess.run([sys.executable, "-c", code], cwd=repo_root, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout
+
+
+def recording(path: list[tuple[float, float]], touch: dict[int, bool]) -> tuple[list[Sample], list[bool]]:
+    """60 Hz samples along ``path``, and contact per sample from {frame: down} switches; down until told otherwise."""
+    down, state = [], True
+    for frame in range(len(path)):
+        state = touch.get(frame, state)
+        down.append(state)
+    return [Sample(20.0 + frame / HZ, x, y) for frame, (x, y) in enumerate(path)], down
+
+
+def kinds(errors) -> list[tuple[str, str, bool]]:
+    return [(error.bar, error.edge, error.entering) for error in errors]
+
+
+def test_a_lift_inside_a_bar_ends_the_visit_without_an_exit_error():
+    # In through the left side of the left bar, stops at x = 72, lifts; the cursor stays there and jumps on touchdown.
+    path = polyline([(0, 55, 140), (17, 72, 140), (40, 72, 140), (41, 97, 140), (60, 105, 140)], 61)
+    samples, down = recording(path, {25: False, 41: True})
+    lifted = replay(samples, BARS, None, 10.0, Params(), down=down)
+    unknown = replay(samples, BARS, None, 10.0, Params())
+    for mode in rl.RENDER_MODES:
+        assert kinds(lifted[mode].errors) == [("left", "left", True)]
+        assert lifted[mode].missed == 0 and lifted[mode].spurious_ms == 0
+        assert ("left", "right", False) in kinds(unknown[mode].errors)  # the jump, taken for a movement out of the bar
+    contact = contact_in(samples, down, BARS)
+    assert (contact.lifts, contact.touch_starts, contact.lift_ends) == (1, 0, 1)
+    assert contact.lifted_s == pytest.approx(16 / HZ) and contact.recorded_s == pytest.approx(60 / HZ)
+
+
+def test_a_touchdown_elsewhere_draws_no_path_through_the_bar_in_between():
+    # Lifted at x = 60, put down again at x = 100: the straight line between them runs through the left bar.
+    path = polyline([(0, 50, 140), (10, 60, 140), (30, 60, 140), (31, 100, 140), (45, 105, 140)], 46)
+    samples, down = recording(path, {12: False, 31: True})
+    lifted = replay(samples, BARS, None, 10.0, Params(), down=down)
+    for mode in rl.RENDER_MODES:
+        assert lifted[mode].errors == [] and lifted[mode].missed == 0 and lifted[mode].spurious_ms == 0
+    assert replay(samples, BARS, None, 10.0, Params())["position"].missed == 1  # an invented visit
+    assert contact_in(samples, down, BARS).lift_ends == 0
+
+
+def test_the_signal_goes_off_at_the_first_lifted_sample_and_on_again_at_the_touchdown():
+    # Moving slowly inside the left bar; lifted for frames 10-19, put down again 2 mm further on.
+    path = polyline([(0, 70, 140), (10, 72, 140), (19, 72, 140), (20, 74, 140), (30, 75.5, 140)], 31)
+    samples, down = recording(path, {10: False, 20: True})
+    for mode in rl.RENDER_MODES:
+        new_planner = partial(planner_for, mode, BARS, None, 10.0, Params())
+        switches = simulate(submitted_plans(new_planner, samples, down))
+        assert switches == [(samples[0].t_s, True), (samples[10].t_s, False), (samples[20].t_s, True)]
+        assert simulate(submitted_plans(new_planner, samples)) == [(samples[0].t_s, True)]
+        outcome = replay(samples, BARS, None, 10.0, Params(), down=down)[mode]
+        assert outcome.errors == [] and outcome.missed == 0 and outcome.spurious_ms == 0
+
+
+def test_touching_down_inside_a_bar_switches_on_at_once_with_no_entry_error():
+    # Lifted at x = 60 from the start, put down inside the right bar (117-127), then out through its right side.
+    path = polyline([(0, 60, 140), (10, 60, 140), (11, 122, 140), (40, 140, 140)], 41)
+    samples, down = recording(path, {0: False, 11: True})
+    outcomes = replay(samples, BARS, None, 10.0, Params(), down=down)
+    for mode in rl.RENDER_MODES:
+        new_planner = partial(planner_for, mode, BARS, None, 10.0, Params())
+        assert simulate(submitted_plans(new_planner, samples, down))[0] == (samples[11].t_s, True)
+        assert kinds(outcomes[mode].errors) == [("right", "right", False)]
+        assert outcomes[mode].missed == 0
+    # The live timer's speed at a touchdown spans the jump, so it runs out at once: off like the position mode.
+    legacy, position = outcomes["timed_legacy"].errors[0], outcomes["position"].errors[0]
+    assert not legacy.bridged and legacy.late_mm == position.late_mm
+    contact = contact_in(samples, down, BARS)
+    assert (contact.lifts, contact.touch_starts, contact.lift_ends) == (0, 1, 0)
+
+
+@pytest.mark.parametrize("mode", rl.RENDER_MODES)
+def test_the_replay_takes_lifts_as_the_trial_loop_does(mode):
+    # The live loop on a scripted trial: lifted inside the left bar, down inside the right one and out of it,
+    # lifted again and put down across the left bar. Replaying what it recorded gives the same state at every sample.
+    calibration = make_configured_ir_frame_calibration((1920, 1080))
+    spec = TrialSpec(level_pct=0.2, comparison_height_mm=12.0, reference_height_mm=10.0, reference_side="left")
+    waypoints = [(0, 55, 141), (20, 72, 141), (39, 72, 141), (40, 122, 141), (60, 135, 141), (69, 135, 141)]
+    scenario = dict(
+        path=polyline([*waypoints, (70, 60, 141), (85, 64, 141)], 86),
+        touch={0: True, 25: False, 40: True, 62: False, 70: True},
+        end="left",
+    )
+    cfg = replace(load_experiment_config(CONFIG_PATH), render_mode=mode)
+    _, attempt, _, _ = run_scripted_trial(cfg, calibration, spec, scenario)
+    c = calibration
+    heights = (10.0, 12.0)
+    nominal = rl.nominal_bars(c.active_width_mm, c.active_height_mm, cfg.inter_bar_gap_mm, cfg.bar_width_mm, *heights)
+    pixel = rl.pixel_bars(
+        c.active_left_px, c.active_top_px, c.active_width_px, c.active_height_px, c.px_per_mm_x, c.px_per_mm_y,
+        cfg.inter_bar_gap_mm, cfg.bar_width_mm, *heights,
+    )  # fmt: skip
+    params = Params(
+        cfg.predict_window_samples, cfg.predict_horizon_factor, cfg.predict_horizon_max_ms, cfg.predict_min_speed_mm_s,
+        cfg.latency_compensation_ms, 1.0 / 60.0, max(1.0 / c.px_per_mm_x, 1.0 / c.px_per_mm_y),
+    )  # fmt: skip
+    samples = [Sample(s.t_us / 1e6, s.x_mm, s.y_mm) for s in attempt.samples]
+    down = [s.contact for s in attempt.samples]
+    assert not all(down)
+    new_planner = partial(planner_for, mode, nominal, pixel, cfg.bar_width_mm, params)
+    live = [s.signal_on for s in attempt.samples]
+    assert [plan.on for plan in submitted_plans(new_planner, samples, down)] == live
+    assert [plan.on for plan in submitted_plans(new_planner, samples)] != live
+
+
+def test_command_line_reports_lifts_and_reads_a_trace_without_contact_as_always_down(tmp_path, capsys):
+    trace = ensure_demo_trace(tmp_path / "demo_replay_trace.sqlite3")
+    (tmp_path / "old").mkdir()
+    (tmp_path / "lifted").mkdir()
+    old = Path(shutil.copy(trace, tmp_path / "old" / "demo_trace.sqlite3"))
+    lifted = Path(shutil.copy(trace, tmp_path / "lifted" / "demo_trace.sqlite3"))
+    connection = sqlite3.connect(old)
+    connection.execute("ALTER TABLE cursor_samples DROP COLUMN contact")  # as in a schema 1 or 2 recording
+    connection.commit()
+    connection.close()
+    connection = sqlite3.connect(lifted)
+    connection.execute("UPDATE cursor_samples SET contact = 0 WHERE attempt_id = 2 AND sequence BETWEEN 100 AND 159")
+    connection.commit()
+    connection.close()
+
+    assert main([str(trace), "--out", str(tmp_path / "out_v3")]) == 0
+    assert "contact: 0 lift(s), lifted 0.0 s" in capsys.readouterr().out
+    assert main([str(old), "--out", str(tmp_path / "out_old")]) == 0
+    assert "contact: not recorded" in capsys.readouterr().out
+    for name in ("recording_crossings.csv", "recording_summary.csv"):
+        assert (tmp_path / "out_old" / name).read_text() == (tmp_path / "out_v3" / name).read_text()
+    assert main([str(lifted)]) == 0
+    assert "contact: 1 lift(s), lifted 1.0 s" in capsys.readouterr().out

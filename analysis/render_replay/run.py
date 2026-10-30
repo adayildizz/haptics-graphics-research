@@ -16,7 +16,7 @@ from experiment import render_logic as rl
 from experiment.render_logic import Rect, Sample
 
 from . import synthetic
-from .core import Outcome, Params, replay
+from .core import Contact, Outcome, Params, contact_in, replay
 
 CATEGORIES = (
     "side edge, entry",
@@ -63,18 +63,23 @@ def _bars(attempt: Attempt, calibration: dict) -> tuple[tuple[Rect, Rect], tuple
     return nominal, pixel, max(1.0 / calibration["px_per_mm_x"], 1.0 / calibration["px_per_mm_y"])
 
 
-def replay_trace(data_path: Path, params: Params) -> list[tuple[str, dict[str, Outcome]]]:
-    """Every recorded attempt under ``data_path`` through the three modes."""
+def replay_trace(data_path: Path, params: Params) -> tuple[list[tuple[str, dict[str, Outcome]]], Contact]:
+    """Every recorded attempt under ``data_path`` through the three modes, and the finger's lifts in them."""
     results = []
+    contact = Contact()
     for path in find_traces(data_path):
         calibrations = _calibrations(path)
         for attempt in load_trace(path):
             nominal, pixel, quantum = _bars(attempt, calibrations[attempt.session.session_id])
             samples = [Sample(float(t), float(x), float(y)) for t, x, y in zip(attempt.t_s, attempt.x_mm, attempt.y_mm)]
+            # The column holds the live FrameDecision.finger_down, i.e. ContactGate's answer, so it is used as is.
+            # Gating it again would take a trial that starts lifted, after an earlier trial showed touch, as down.
+            down = None if attempt.contact is None else attempt.contact.tolist()
             trial_params = Params(**{**params.__dict__, "position_quantum_mm": quantum})
             label = f"{attempt.session.session_id} {attempt.stem}"
-            results.append((label, replay(samples, nominal, pixel, attempt.bar_width_mm, trial_params)))
-    return results
+            results.append((label, replay(samples, nominal, pixel, attempt.bar_width_mm, trial_params, down=down)))
+            contact += contact_in(samples, down, nominal)
+    return results, contact
 
 
 def replay_synthetic(params: Params, *, against_finger: bool) -> list[tuple[str, dict[str, Outcome]]]:
@@ -129,6 +134,22 @@ def summarize(results: Sequence[tuple[str, dict[str, Outcome]]]) -> list[dict[st
             }
         )
     return rows
+
+
+def format_contact(contact: Contact) -> str:
+    """Lines for a recording's title: how often and how long the finger was off the glass, and what that excluded."""
+    if contact.unrecorded == contact.trials:
+        return "  contact: not recorded (trace schema 1 or 2), so the finger is taken to be on the glass throughout"
+    share = contact.lifted_s / contact.recorded_s if contact.recorded_s > 0 else 0.0
+    lines = [
+        f"  contact: {contact.lifts} lift(s), lifted {contact.lifted_s:.1f} s of {contact.recorded_s:.1f} s "
+        f"({share:.0%}). Signal off while lifted; every mode starts afresh at each touchdown.",
+        f"  {contact.touch_starts} visit(s) began with a touchdown inside a bar and {contact.lift_ends} ended with a "
+        "lift there; those ends have no edge error.",
+    ]
+    if contact.unrecorded:
+        lines.append(f"  {contact.unrecorded} trial(s) have no contact column: taken as on the glass throughout.")
+    return "\n".join(lines)
 
 
 def format_table(title: str, rows: Sequence[dict[str, object]]) -> str:
@@ -193,11 +214,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         reports.append(("synthetic_vs_recording", "Synthetic session, judged as a recording would be (straight lines between its samples)", replay_synthetic(params, against_finger=False)))
         reports.append(("synthetic_vs_finger", "Synthetic session, judged against the finger path that produced it", replay_synthetic(params, against_finger=True)))
     else:
-        results = replay_trace(args.data, params)
+        results, contact = replay_trace(args.data, params)
         if not results:
             print(f"no recorded trials under {args.data}")
             return 2
-        reports.append(("recording", f"{args.data.name}: {len(results)} recorded trial(s)", results))
+        title = f"{args.data.name}: {len(results)} recorded trial(s)\n{format_contact(contact)}"
+        reports.append(("recording", title, results))
     for name, title, results in reports:
         print(format_table(title, summarize(results)))
         print()

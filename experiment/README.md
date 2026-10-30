@@ -507,6 +507,20 @@ the figure is the furthest the finger got outside and the case is counted under
 the number of visits a mode missed altogether, and the time it had the signal on
 away from any bar.
 
+**Lifts.** A recording with a `contact` column (schema 3) is replayed with the
+trial loop's own rule for a lifted finger (`TrialRenderer.frame`): the signal
+goes off at the first lifted sample, and every mode starts afresh at the
+touchdown, so nothing is drawn or extrapolated across the jump from the lift
+point. The column already holds the trial loop's decision (contact trusted only
+once the device has reported a touch), so it is used as recorded. As in the
+trial loop, `timed_legacy` takes its speed at a touchdown from that jump. The
+true path is split at each lift as well: an end of a visit that a lift or a
+touchdown cut short gets no edge error, and time off the glass never counts as
+signal on away from a bar. Above the table the tool prints the number of lifts,
+the time lifted, and how many visits began with a touchdown or ended with a lift
+inside a bar. Recordings without the column (schemas 1 and 2) are replayed as if
+the finger never lifted.
+
 `--synthetic` uses a built-in session with a known finger path and what a 60 Hz
 loop polling a 100 Hz frame would record of it, and prints two tables: judged
 as a recording would be, and judged against the finger path itself.
@@ -518,6 +532,8 @@ What the figures do not include:
   decisions, with the true path taken as straight lines between samples.
 - How old a position already was when it was read is invisible in a recording.
   Only the second synthetic table shows it.
+- A lift the touch frame does not report is invisible too: the cursor's jump is
+  then taken for a movement.
 - Switches are assumed to happen at their planned instant. Scheduler lateness,
   the VISA write and the generator's own delay are not included; the last two
   need an oscilloscope.
