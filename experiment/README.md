@@ -284,7 +284,7 @@ experiment/
 ├── constant_stimuli.py  # Level generation + trial scheduling (no pygame dependency)
 ├── staircase.py         # Staircase algorithm for pilot mode (no pygame dependency)
 ├── stimulus.py          # Generator connection and the VISA write helpers
-├── render_logic.py      # Pure render decisions: bars, velocity, predictive plans (no pygame, no VISA)
+├── render_logic.py      # Pure render decisions: bars, velocity, predictive plans, top-edge cue (no pygame, no VISA)
 ├── signal_scheduler.py  # The one thread that switches the output; watchdog; timing benchmark
 ├── trial_render.py      # Per-trial glue: sample -> plan -> scheduler -> trace events
 ├── input_probe.py       # Rig check: position reports per second, and whether contact is reported
@@ -300,7 +300,7 @@ analysis/
 │                         # on saved CSVs.
 ├── trace_movement.py    # Per-attempt finger animations (and the earlier sample-count heat map)
 ├── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
-└── render_replay/       # Replays a recording through each render mode; edge errors in mm
+└── render_replay/       # Replays a recording through each render mode; edge errors in mm; top-edge cue sweep
 
 tests/                   # pytest: level generation, scheduling, psychometric-fit recovery
 ```
@@ -562,6 +562,78 @@ The left/right arrow keys seek by one second and Space toggles playback. A
 deterministic `demo_replay_trace.sqlite3` recording is created automatically so
 the browser can be evaluated before real participant traces are available. Pass
 `--no-demo` to hide that recording.
+
+#### Top-edge cue (offline only)
+
+A short vibration pulse when the finger crosses a bar's top edge, for a
+voice-coil actuator worn on the finger. So far only the decision exists
+(`TopEdgeCue` in `render_logic.py`). It is not wired into the trial loop, and
+the pulse pattern and the driver are not chosen yet. The rules:
+
+- **Detected, not predicted.** The crossing is found on the straight step
+  between two samples, and the pulse fires at the sample that shows it. A pulse
+  can come late, but never for a crossing that did not happen. The interpolated
+  crossing time and point are kept, so the lateness can be measured.
+- **Both directions.** A downward entry and an upward exit both fire, with the
+  same pattern, tagged `entering` or `leaving`.
+- **Corner tolerance `c`.** The top edge counts `c` mm beyond each side of the
+  bar, so a diagonal pass over a top corner fires. Leaving through a side
+  without crossing the top line does not.
+- **Re-arm distance `d`.** A bar that fired is disarmed until the finger is at
+  least `d` mm from its extended top edge. At the first sample and at every
+  touchdown, a bar is armed if and only if the finger is that far away. Each bar
+  has its own state.
+- **Lifts.** Nothing fires while the finger is lifted, and the step to a
+  touchdown is never a crossing.
+- **Jump guard `J`.** A finger-down step longer than `J` mm is taken as a lift
+  and a touchdown. The touch frame can miss a short lift, and an actuator on the
+  finger is felt in the air too.
+- **One actuator.** Pulses are at least `min_interval` apart, whichever bar
+  they are for, and one crossing gives one pulse at most. Where two extended
+  edges overlap (equal heights, gap under `2c`), the crossing is the nearer
+  bar's.
+- The bars are the configured ones, whatever the render mode. Practice and
+  catch trials get pulses as well.
+
+Defaults: `d` = 3 mm, `c` = 1 mm, `J` = 20 mm, and `min_interval` = 100 ms,
+which is a placeholder until the pulse pattern is chosen.
+
+```
+python -m analysis.render_replay --pulses TRACE [TRACE ...] [--out DIR] [--rearm 2,3,5] [--corner 0,1,2,3]
+       [--jump 10,20,30] [--min-interval-ms 100]
+```
+
+Replays the cue over recorded traces for every combination of the listed
+values. For each setting it prints: pulses per trial (main, catch and practice
+apart); true top-edge crossings that got no pulse and why, with the path
+travelled since the pulse that disarmed the bar; pulses that exist only because
+of the tolerance; jump-guard hits and how many would have fired; how far past
+the top line the finger was at the firing sample (median and 95%, entering and
+leaving apart); pulses within 300 ms of one at the same bar; and the
+entering/leaving split. `--out` writes the table and every crossing as CSV.
+Recordings with and without a contact column are reported apart. Without one,
+the finger is taken to be on the glass throughout, so only the jump guard
+separates lifts. Not included: how old a position was when it was read, the
+loop's own delay, and the driver's and actuator's delays.
+
+Why these defaults (recordings of 14 October with contact, 158 trials):
+
+- `J` = 20: every top crossing on a 10–20 mm step (26) went on in the same
+  direction at the next step, with no lift within 10 frames, so these were fast
+  strokes, not glitches. `J` = 10 would drop them all. The three longer steps
+  that cross a top edge are two relocations of 190–250 mm and a 29 mm jump
+  against the direction of travel. The price: such fast entries are seen late
+  (95th percentile 9.9 mm below the top, against 4.0 mm with `J` = 10).
+- `c` = 1: it fires for 19 passes through a corner (the finger inside the bar
+  within 3 frames of the crossing), `c` = 2 for 20. Pulses with the finger not
+  in the bar within those frames grow faster: 19 at `c` = 1, 32 at `c` = 2, 42
+  at `c` = 3. At the smallest gap the configuration allows (3 mm), extended
+  edges of 1 mm never overlap.
+- `d` = 3: half the pulses fire with the finger 1.5 mm or more past the top
+  line. With `d` = 2, 38% fire at least 2 mm past it, so the bar re-arms at
+  once; with `d` = 3, 17% fire at least 3 mm past it. 21 of 336 true crossings
+  get no pulse because that bar's last pulse disarmed it, after a median 3.5 mm
+  of travel since that pulse (`d` = 2: 10, `d` = 5: 34).
 
 ### Supervisor launcher (GUI)
 
