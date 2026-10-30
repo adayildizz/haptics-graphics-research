@@ -117,3 +117,21 @@ def test_practice_round_and_dominant_hand_round_trip(tmp_path):
     assert rows[0]["dominant_hand"] == "right"
     # Main-block rows and rows written without the column read as round 0.
     assert rows[1]["practice_round"] == 0
+
+
+def test_each_row_names_the_render_mode_the_trial_ran_in_and_its_felt_gaps():
+    from dataclasses import replace
+
+    from experiment.config import ExperimentConfig
+    from experiment.constant_stimuli import TrialSpec
+    from experiment.main import _trial_row
+    from experiment.trial import TrialTimeout
+
+    assert TRIAL_FIELDS[-2:] == ["render_mode", "felt_gaps"]
+    spec = TrialSpec(level_pct=0.1, comparison_height_mm=110.0, reference_height_mm=100.0, reference_side="left")
+    timeout = TrialTimeout(elapsed_s=30.0, felt_gaps=2)
+    mixed = ExperimentConfig(base_height_mm=100.0, bar_width_mm=10.0, render_mode="mixed")
+    row = _trial_row("S", mixed, replace(spec, render_mode="kalman"), 1, "timeout", timeout)
+    assert row["render_mode"] == "kalman" and row["felt_gaps"] == 2
+    single = ExperimentConfig(base_height_mm=100.0, bar_width_mm=10.0, render_mode="position")
+    assert _trial_row("S", single, spec, 1, "timeout", timeout)["render_mode"] == "position"

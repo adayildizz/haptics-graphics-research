@@ -27,6 +27,7 @@ from .config import ExperimentConfig, config_to_dict, load_experiment_config, wr
 from .constant_stimuli import TrialSpec, practice_passed, practice_required_correct, resolve_seed
 from .input_keys import is_continue_key, is_exit_key
 from .staircase import StairCase, pilot_range_check
+from .trial_render import trial_mode
 
 if TYPE_CHECKING:
     from .trace_recorder import AsyncTraceRecorder
@@ -38,11 +39,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--participant", default=None)
     parser.add_argument("--windowed", action="store_true", help="Use a debug window instead of fullscreen.")
     parser.add_argument("--dry-run", action="store_true", help="Simulate an ideal observer; no pygame/hardware.")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=data_logger.DATA_DIR,
+        help="Folder for this session's files (default experiment/data, which git ignores).",
+    )
     return parser.parse_args()
 
 
-def _session_paths(cfg: ExperimentConfig, participant: str) -> tuple[str, Path, Path, Path]:
-    data_dir = data_logger.ensure_data_dir()
+def _session_paths(
+    cfg: ExperimentConfig, participant: str, data_dir: Path = data_logger.DATA_DIR
+) -> tuple[str, Path, Path, Path]:
+    data_dir = data_logger.ensure_data_dir(data_dir)
     session_id = f"{participant}_{time.strftime('%Y%m%d_%H%M%S')}"
     trial_path = data_dir / f"{session_id}_trials.csv"
     summary_path = data_dir / f"{session_id}_thresholds.csv"
@@ -189,6 +198,8 @@ def _trial_row(
         "practice_round": practice_round,
         "response_time_s": f"{(result.response_time_s if answered else result.elapsed_s):.4f}",
         "passes": result.passes,
+        "render_mode": trial_mode(cfg, spec.render_mode),
+        "felt_gaps": result.felt_gaps,
     }
 
 
@@ -481,7 +492,7 @@ def run() -> int:
     if cfg.masking_noise:
         masking_noise.start(cfg.masking_noise_volume)
     clock = pygame.time.Clock()
-    session_id, trial_path, summary_path, config_snapshot_path = _session_paths(cfg, participant)
+    session_id, trial_path, summary_path, config_snapshot_path = _session_paths(cfg, participant, args.data_dir)
 
     screen = display.init_window(fullscreen=not args.windowed)
     current_calibration = calibration_module.make_configured_ir_frame_calibration(screen.get_size())

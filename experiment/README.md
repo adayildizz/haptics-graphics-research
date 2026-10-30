@@ -56,11 +56,24 @@ printed at session start and stored in the session's config snapshot.
 | `predictive` (default) | The finger's velocity vector is estimated by a linear fit over the last 3 position samples. Along that straight line, the instants at which the finger enters and leaves each bar are computed for the next 1.5 sample intervals (at most 25 ms) and the signal is switched at those instants. Entry and exit can both fall inside one interval (a clipped corner). Each new sample cancels what was planned and plans again. Below 5 mm/s nothing is predicted: the sample itself decides. |
 | `position` | On exactly while the latest sample is inside a bar. No prediction; the baseline for comparison. |
 | `timed_legacy` | The original rule, kept for comparison and documentation only: on while the sample is inside the bar, and after it leaves until `bar_width / entry speed` has passed since entry (speed floor 1 mm/s, at most 2 s). |
+| `kalman` | `position`, plus a switch timed ahead of the next sample when a Kalman filter is confident about it. One constant-velocity filter per axis (`kalman_accel_psd`, `kalman_meas_sd_mm`) estimates the finger's velocity and its uncertainty; a repeated position within the stale time counts as a report not yet arrived. An edge crossing within the horizon is scheduled only if, at the end of the horizon, the finger is past that edge with probability `kalman_confidence`. A slow sideways drift towards an edge is too uncertain for that, so it does not break the signal inside the bar the way `predictive` can; a decided stroke still switches early. |
+
+`render_mode: mixed` is not a mode of its own: every trial of the main block
+draws one of `mixed_render_modes`, spread evenly over the levels, and the
+participant is not told which (practice and staircase trials use the first one).
+The trial log's `render_mode` column and the trace's `sample_stats` and
+`signal_write` events name the mode each trial ran in. With `felt_gap_key: true`
+the Down arrow or numpad 2 logs a `felt_gap` trace event during a trial (mode,
+position, signal state, contact) without answering; the trial log counts them
+in `felt_gaps`. `experiment/configs/kalman_check.yaml` combines both into a short
+session comparing `predictive`, `position` and `kalman`; run it with
+`--data-dir measurements/<date>_kalman` so its files can be committed (see
+`measurements/README.md`).
 
 **A lifted finger switches the signal off, in every mode.** The cursor keeps
 reporting its last position after the finger leaves the glass, so without this
 a lift inside a bar would leave the signal on. The rule sits in one place
-(`trial_render.py`) for all three modes. On touching down again every mode starts
+(`trial_render.py`) for every mode. On touching down again every mode starts
 afresh, because the cursor has jumped; a switch-on at that moment is logged with
 edge `touch`, a switch-off at a lift with edge `lift`. The rule applies only
 once the input device has reported a touch in the session (see *Contact* under
@@ -491,11 +504,11 @@ The supervisor GUI runs this for the session that just ended (see below).
 
 ```
 python -m analysis.render_replay TRACE [--out DIR] [--window 3] [--horizon-factor 1.5] [--horizon-max-ms 25]
-       [--min-speed 5] [--latency-ms 0]
+       [--min-speed 5] [--latency-ms 0] [--kalman-psd 30000] [--kalman-meas-sd 0.2] [--kalman-confidence 0.9]
 python -m analysis.render_replay --synthetic [--out DIR] ...
 ```
 
-Runs the decision code of all three render modes (`experiment/render_logic.py`,
+Runs the decision code of every render mode (`experiment/render_logic.py`,
 the same module the trial loop uses, and nothing else from the experiment
 package) over recorded finger positions. For every bar edge the finger crossed
 it reports how far past the edge the finger was when that mode switched the
@@ -506,6 +519,14 @@ the figure is the furthest the finger got outside and the case is counted under
 "never off". The table gives median, 5%, 95% and largest value per edge type,
 the number of visits a mode missed altogether, and the time it had the signal on
 away from any bar.
+
+**Breaks.** When a mode switches the signal off and on again while the finger
+stays inside one bar, that is a break, not an exit and a new entry. The two
+on-intervals are joined for the edge errors, the re-switch-on is not counted as
+signal on away from a bar, and each break's length is listed. The table gives
+their number, their rate per second of time inside a bar, and their median and
+longest length. Only `predictive` and `kalman` can break: the other modes follow
+the samples.
 
 **Lifts.** A recording with a `contact` column (schema 3) is replayed with the
 trial loop's own rule for a lifted finger (`TrialRenderer.frame`): the signal

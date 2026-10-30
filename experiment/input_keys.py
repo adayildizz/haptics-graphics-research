@@ -36,6 +36,16 @@ def is_exit_key(key: int, pygame_module: Any) -> bool:
     return key == pygame_module.K_ESCAPE
 
 
+def is_felt_gap_key(key: int, pygame_module: Any) -> bool:
+    """Down arrow or numpad 2: "I felt the signal break", logged during a trial when ``felt_gap_key`` is on.
+
+    Both sit between and below the two response keys, so the hand on the
+    arrows (or on numpad 4/6) reaches it without looking. It never answers or
+    ends a trial.
+    """
+    return key in (pygame_module.K_DOWN, pygame_module.K_KP2)
+
+
 def response_for_key(key: int, pygame_module: Any) -> Literal["left", "right"] | None:
     if key in (pygame_module.K_LEFT, pygame_module.K_KP4):
         return "left"

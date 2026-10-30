@@ -316,3 +316,29 @@ def test_wider_blocks_stay_balanced():
 def test_block_size_must_divide_the_trial_count():
     with pytest.raises(ValueError, match="divisible"):
         _cfg(trials_per_level=10, sweeps_per_block=3)
+
+
+def test_a_mixed_session_spreads_the_modes_evenly_over_trials_and_levels():
+    cfg = _cfg(render_mode="mixed", n_levels=7, delta_max_pct=0.1, trials_per_level=8, catch_trial_pct=0.0)
+    sequence = build_trial_sequence(cfg, seed=11)
+    counts = collections.Counter(spec.render_mode for spec in sequence)
+    assert set(counts) == {"predictive", "position", "kalman"}
+    assert max(counts.values()) - min(counts.values()) <= 1
+    for level in {spec.level_pct for spec in sequence}:
+        per_level = collections.Counter(spec.render_mode for spec in sequence if spec.level_pct == level)
+        assert max(per_level.values()) - min(per_level.values()) <= 1
+    # The draw has its own random stream: levels and sides come out exactly as in a single-mode session.
+    plain = build_trial_sequence(_cfg(n_levels=7, delta_max_pct=0.1, trials_per_level=8, catch_trial_pct=0.0), seed=11)
+    assert [(s.level_pct, s.reference_side) for s in sequence] == [(s.level_pct, s.reference_side) for s in plain]
+    assert all(spec.render_mode is None for spec in plain)
+    assert build_trial_sequence(cfg, seed=11) == sequence
+
+
+def test_mixed_modes_must_be_real_render_modes():
+    with pytest.raises(ValueError, match="mixed_render_modes"):
+        _cfg(render_mode="mixed", mixed_render_modes=["predictive", "mixed"])
+    with pytest.raises(ValueError, match="mixed_render_modes"):
+        _cfg(render_mode="mixed", mixed_render_modes=[])
+    assert _cfg(render_mode="mixed", mixed_render_modes=["kalman", "position"]).mixed_render_modes == ("kalman", "position")
+    with pytest.raises(ValueError, match="kalman_confidence"):
+        _cfg(render_mode="kalman", kalman_confidence=1.0)

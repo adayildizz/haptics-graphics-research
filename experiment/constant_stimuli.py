@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import math
 import random
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 
 import numpy as np
 
 from .config import ExperimentConfig
+from .render_logic import MIXED
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,7 @@ class TrialSpec:
     reference_side: str          # "left" or "right"
     is_catch: bool = False
     is_practice: bool = False
+    render_mode: str | None = None  # this trial's draw in a mixed session; None = the configured mode
 
 
 def compute_levels(cfg: ExperimentConfig) -> list[float]:
@@ -211,7 +214,33 @@ def build_trial_sequence(cfg: ExperimentConfig, seed: int) -> list[TrialSpec]:
             _spec(catch_levels[i % len(catch_levels)], catch_sides[i], is_catch=True),
         )
 
-    return [spec for block in blocks for spec in block]
+    sequence = [spec for block in blocks for spec in block]
+    if cfg.render_mode == MIXED:
+        sequence = assign_render_modes(sequence, cfg.mixed_render_modes, seed)
+    return sequence
+
+
+def assign_render_modes(sequence: Sequence[TrialSpec], modes: Sequence[str], seed: int) -> list[TrialSpec]:
+    """Spread each level's trials evenly over ``modes``, in an order the participant cannot follow.
+
+    The modes are dealt in turn across the levels, so every mode gets the same number of trials overall and within
+    each level, give or take one, and then shuffled within the level. The draw has its own random stream, so the
+    order of levels and sides is the same as without it.
+    """
+    rng = random.Random(f"{seed}:render-modes")
+    groups: dict[tuple[float, bool], list[int]] = {}
+    for index, spec in enumerate(sequence):
+        groups.setdefault((spec.level_pct, spec.is_catch), []).append(index)
+    assigned = list(sequence)
+    turn = 0
+    for key in sorted(groups):
+        indices = groups[key]
+        draws = [modes[(turn + k) % len(modes)] for k in range(len(indices))]
+        turn += len(indices)
+        rng.shuffle(draws)
+        for index, mode in zip(indices, draws):
+            assigned[index] = replace(sequence[index], render_mode=mode)
+    return assigned
 
 
 def resolve_seed(cfg: ExperimentConfig) -> int:
