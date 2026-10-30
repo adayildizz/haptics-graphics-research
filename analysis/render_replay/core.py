@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import bisect
-from collections.abc import Sequence
-from dataclasses import dataclass
+import math
+from collections.abc import Callable, Sequence
+from dataclasses import astuple, dataclass
+from functools import partial
 
 from experiment import render_logic as rl
 from experiment.render_logic import Rect, Sample
@@ -27,7 +29,7 @@ class Params:
 
 @dataclass(frozen=True)
 class Inside:
-    """One stretch of the true path inside a bar; a missing end means the recording starts or stops there."""
+    """One visit of the true path to a bar; a missing end means the recording, or the contact, starts or stops there."""
 
     bar: str
     enter: rl.EdgeCrossing | None
@@ -65,11 +67,60 @@ class EdgeError:
 @dataclass(frozen=True)
 class Outcome:
     errors: list[EdgeError]
-    missed: int  # stretches inside a bar during which the mode never had the signal on
+    missed: int  # visits to a bar during which the mode never had the signal on
     spurious_ms: float  # signal on with the finger nowhere near the inside of a bar
 
 
-def planner_for(mode: str, nominal: Sequence[Rect], pixel: Sequence[Rect] | None, bar_width_mm: float, params: Params):
+@dataclass(frozen=True)
+class Stretch:
+    """Samples ``first`` to ``last`` with the finger on the glass; whether a lift, not the recording, bounds them."""
+
+    first: int
+    last: int
+    after_lift: bool
+    before_lift: bool
+
+
+@dataclass(frozen=True)
+class Contact:
+    """The finger's lifts in one or more trials, and the visits to a bar they cut short."""
+
+    trials: int = 0
+    unrecorded: int = 0  # trials whose trace has no contact column: taken as on the glass throughout
+    lifts: int = 0
+    lifted_s: float = 0.0  # from each first lifted sample to the next one on the glass, or to the end
+    recorded_s: float = 0.0
+    touch_starts: int = 0  # visits that began with a touchdown inside the bar: no entry error
+    lift_ends: int = 0  # visits that ended with a lift inside the bar: no exit error
+
+    def __add__(self, other: Contact) -> Contact:
+        return Contact(*(a + b for a, b in zip(astuple(self), astuple(other))))
+
+
+def stretches(count: int, down: Sequence[bool] | None) -> list[Stretch]:
+    """The runs of samples with the finger on the glass; all of them when contact is unknown."""
+    if down is None:
+        return [Stretch(0, count - 1, False, False)]
+    found: list[Stretch] = []
+    first: int | None = None
+    for index, finger_down in enumerate([*down, False]):
+        if finger_down and first is None:
+            first = index
+        elif not finger_down and first is not None:
+            found.append(Stretch(first, index - 1, first > 0, index < count))
+            first = None
+    return found
+
+
+def planner_for(
+    mode: str,
+    nominal: Sequence[Rect],
+    pixel: Sequence[Rect] | None,
+    bar_width_mm: float,
+    params: Params,
+    previous: Sample | None = None,
+):
+    """A fresh planner; ``previous`` is the sample just before it starts, i.e. the last one lifted."""
     if mode == "predictive":
         return rl.PredictivePlanner(
             nominal,
@@ -85,15 +136,36 @@ def planner_for(mode: str, nominal: Sequence[Rect], pixel: Sequence[Rect] | None
         return rl.PositionPlanner(nominal)
     if mode == "timed_legacy":
         # The legacy rule tests the pixel-rounded rectangles; fall back to nominal when they are unknown.
-        return rl.LegacyPlanner(pixel or nominal, bar_width_mm)
+        planner = rl.LegacyPlanner(pixel or nominal, bar_width_mm)
+        # Live, its speed always comes from the frame before (speed_mm_s in experiment/trial.py), so at a touchdown
+        # it spans the jump from where the finger lifted.
+        planner._previous = previous
+        return planner
     raise ValueError(f"unknown render mode {mode!r}")
 
 
-def simulate(planner, samples: Sequence[Sample]) -> list[tuple[float, bool]]:
+def submitted_plans(
+    new_planner: Callable[[Sample | None], object], samples: Sequence[Sample], down: Sequence[bool] | None = None
+) -> list[rl.Plan]:
+    """The plan the trial loop submits at each sample: the mode's own, inside the live rule for a lifted finger."""
+    # The rule of TrialRenderer.frame (experiment/trial_render.py), which this tool may not import. A lifted finger
+    # gets the signal off; touching down starts the mode afresh, as the cursor sat still and has now jumped.
+    planner = new_planner(None)
+    submitted: list[rl.Plan] = []
+    for index, sample in enumerate(samples):
+        if down is not None and not down[index]:
+            submitted.append(rl.Plan(sample.t_s, False, None, "lift", (), sample.x_mm, sample.y_mm))
+            continue
+        if down is not None and index > 0 and not down[index - 1]:
+            planner = new_planner(samples[index - 1])
+        submitted.append(planner.plan(sample))
+    return submitted
+
+
+def simulate(plans: Sequence[rl.Plan]) -> list[tuple[float, bool]]:
     """(time, on) switches an ideal scheduler would execute: each plan's state, then its transitions until the next plan."""
     on = False
     switches: list[tuple[float, bool]] = []
-    plans = [planner.plan(sample) for sample in samples]
     for index, plan in enumerate(plans):
         if plan.on != on:
             on = plan.on
@@ -123,7 +195,7 @@ def on_intervals(switches: Sequence[tuple[float, bool]], end_s: float) -> list[t
 
 
 def true_insides(truth: Sequence[Sample], bars: Sequence[Rect]) -> list[Inside]:
-    """Every visit of the true path to a bar, from the edge it came in by to the edge it left by."""
+    """Every visit of one unbroken true path to a bar, from the edge it came in by to the edge it left by."""
     open_visits: dict[str, rl.EdgeCrossing | None] = {}
     start_bar = rl.side_at(bars, truth[0].x_mm, truth[0].y_mm)
     if start_bar is not None:
@@ -140,7 +212,7 @@ def true_insides(truth: Sequence[Sample], bars: Sequence[Rect]) -> list[Inside]:
 
 
 class Path:
-    """The true finger path, linearly interpolated between its samples."""
+    """One unbroken true finger path, linearly interpolated between its samples; never across a lift."""
 
     def __init__(self, samples: Sequence[Sample]) -> None:
         self.samples = samples
@@ -184,9 +256,32 @@ def _match(spans: Sequence[tuple[float, float]], intervals: Sequence[tuple[float
 
 
 def evaluate(
+    mode: str,
+    switches: Sequence[tuple[float, bool]],
+    truth: Sequence[Sample],
+    bars: Sequence[Rect],
+    down: Sequence[bool] | None = None,
+) -> Outcome:
+    """Match each true visit to the mode's on-interval and measure the entry and exit errors, per stretch of contact."""
+    errors: list[EdgeError] = []
+    missed, spurious_ms = 0, 0.0
+    for stretch in stretches(len(truth), down):
+        # Where the finger went between two stretches is unknown: no visit, on-interval or on-time spans a lift, and
+        # an end that a lift or touchdown cut short has no edge error, like one the recording cut short.
+        t0_s = truth[stretch.first].t_s if stretch.after_lift else -math.inf
+        t1_s = truth[stretch.last].t_s if stretch.before_lift else math.inf
+        own = [(t_s, on) for t_s, on in switches if t0_s <= t_s <= t1_s]
+        outcome = _evaluate_path(mode, own, truth[stretch.first : stretch.last + 1], bars)
+        errors += outcome.errors
+        missed += outcome.missed
+        spurious_ms += outcome.spurious_ms
+    return Outcome(errors, missed, spurious_ms)
+
+
+def _evaluate_path(
     mode: str, switches: Sequence[tuple[float, bool]], truth: Sequence[Sample], bars: Sequence[Rect]
 ) -> Outcome:
-    """Match each true visit to the mode's on-interval and measure the entry and exit errors."""
+    """``evaluate`` on one unbroken path, with the switches made while the finger was on it."""
     path = Path(truth)
     by_name = {bar.name: bar for bar in bars}
     start_s, end_s = truth[0].t_s, truth[-1].t_s
@@ -210,7 +305,7 @@ def evaluate(
         if visit.exit is None:
             continue
         if shared_after or off_s >= end_s:
-            # Still on when the finger came back in, or when the recording ended: report how far out it got.
+            # Still on when the finger came back in, or when the recording or the contact ended: how far out it got.
             until_s = spans[index + 1][0] if shared_after else end_s
             reach = path.furthest_outside(t_out, until_s, bar, visit.exit.edge)
             outside_ms = 1000.0 * (until_s - t_out)
@@ -228,6 +323,27 @@ def evaluate(
     return Outcome(errors, sum(matched is None for matched in matches), spurious_ms)
 
 
+def contact_in(samples: Sequence[Sample], down: Sequence[bool] | None, bars: Sequence[Rect]) -> Contact:
+    """One trial's lifts, the time lifted, and the visits a touchdown or lift cut short."""
+    recorded_s = samples[-1].t_s - samples[0].t_s
+    if down is None:
+        return Contact(trials=1, unrecorded=1, recorded_s=recorded_s)
+    touch_starts = lift_ends = 0
+    runs = stretches(len(samples), down)
+    for run in runs:
+        for visit in true_insides(samples[run.first : run.last + 1], bars):
+            touch_starts += run.after_lift and visit.enter is None
+            lift_ends += run.before_lift and visit.exit is None
+    return Contact(
+        trials=1,
+        lifts=sum(run.before_lift for run in runs),
+        lifted_s=sum(b.t_s - a.t_s for a, b, finger_down in zip(samples, samples[1:], down) if not finger_down),
+        recorded_s=recorded_s,
+        touch_starts=touch_starts,
+        lift_ends=lift_ends,
+    )
+
+
 def replay(
     samples: Sequence[Sample],
     nominal: Sequence[Rect],
@@ -235,9 +351,22 @@ def replay(
     bar_width_mm: float,
     params: Params,
     truth: Sequence[Sample] | None = None,
+    down: Sequence[bool] | None = None,
 ) -> dict[str, Outcome]:
-    """All three modes on one trial; ``truth`` defaults to the samples themselves, joined by straight lines."""
+    """All three modes on one trial; ``truth`` defaults to the samples themselves, joined by straight lines.
+
+    ``down`` says per sample whether the finger was on the glass; without it, it never lifts. Contact is only known
+    at the samples, so it cannot be combined with a separate truth.
+    """
+    if down is not None and truth is not None:
+        raise ValueError("contact is known per recorded sample: judge against the samples themselves")
     return {
-        mode: evaluate(mode, simulate(planner_for(mode, nominal, pixel, bar_width_mm, params), samples), truth or samples, nominal)
+        mode: evaluate(
+            mode,
+            simulate(submitted_plans(partial(planner_for, mode, nominal, pixel, bar_width_mm, params), samples, down)),
+            truth or samples,
+            nominal,
+            down,
+        )
         for mode in rl.RENDER_MODES
     }
