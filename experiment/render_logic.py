@@ -1,4 +1,5 @@
-"""Pure render decisions: bar geometry, finger velocity, when the signal should switch, and when a cue pulse fires."""
+"""Pure render decisions: which IR reports to trust, bar geometry, finger velocity, when the signal should switch, and
+when a cue pulse fires."""
 
 # Standard library only, and nothing from this package: analysis tools replay recordings through it.
 
@@ -310,6 +311,98 @@ class ContactGate:
         # A driver that never reports touch would otherwise read as a finger that is never down.
         self.device_reports_touch = self.device_reports_touch or contact
         return contact or not self.device_reports_touch
+
+
+IR_GLITCHES = ("ir_lift_ignored", "ir_jump_rejected", "ir_jump_reanchored")
+
+
+@dataclass(frozen=True)
+class IrReading:
+    """The finger as the renderer takes it from one IR report."""
+
+    x_mm: float
+    y_mm: float
+    down: bool
+    held: bool  # the position is the last accepted one, not this report's
+
+
+@dataclass(frozen=True)
+class IrGlitch:
+    """One glitch the filter ignored, known once it is over."""
+
+    kind: str  # one of IR_GLITCHES
+    t_s: float  # the report that ended it
+    duration_s: float  # from its first report to ``t_s``
+    distance_mm: float | None = None  # jumps: the first rejected report's distance; re-anchors: the new position's
+    ended: str = ""  # rejected jumps: "return", "lift" or "end" (of the trial)
+
+
+class IrGlitchFilter:
+    """Ignores the IR frame's glitches while the finger stays on the glass: short false lifts and jumps.
+
+    A lift counts only once the reports have said "up" for ``lift_debounce_s``; until then the finger is taken as down
+    at the last accepted position. While down, a report more than ``jump_mm`` from the last accepted position is
+    rejected and the last accepted position is used instead, the first report after an ignored lift included. The
+    rejection ends when a report comes back within ``jump_mm``, or when it has lasted ``reanchor_s``: that report is
+    then accepted. A real lift ends a rejection, and the next touchdown is accepted wherever it is.
+    """
+
+    def __init__(self, lift_debounce_s: float = 0.1, jump_mm: float = 20.0, reanchor_s: float = 1.0) -> None:
+        self.lift_debounce_s = lift_debounce_s
+        self.jump_mm = jump_mm
+        self.reanchor_s = reanchor_s
+        self.glitches: tuple[IrGlitch, ...] = ()  # the glitches that ended at the latest report
+        self._accepted: tuple[float, float] | None = None  # the last accepted position; None while lifted
+        self._lift_s: float | None = None  # first "up" report of a lift that has not counted yet
+        self._jump: tuple[float, float] | None = None  # (first report, its distance) of the rejection in progress
+
+    def step(self, t_s: float, x_mm: float, y_mm: float, down: bool) -> IrReading:
+        """``down`` is the report's contact; the reading is what the renderer should use in its place."""
+        found: list[IrGlitch] = []
+        self.glitches = ()
+        if self._accepted is None:
+            # Lifted, or the first report: nothing to hold on to, so the report stands; a touchdown is accepted.
+            if down:
+                self._accepted = (x_mm, y_mm)
+            return IrReading(x_mm, y_mm, down, False)
+        if not down:
+            if self._lift_s is None:
+                self._lift_s = t_s
+            if t_s - self._lift_s < self.lift_debounce_s:
+                return IrReading(*self._accepted, True, True)
+            # Up for long enough: a real lift, from here on as if there were no filter.
+            if self._jump is not None:
+                found.append(IrGlitch(IR_GLITCHES[1], t_s, t_s - self._jump[0], self._jump[1], "lift"))
+            self._accepted = self._lift_s = self._jump = None
+            self.glitches = tuple(found)
+            return IrReading(x_mm, y_mm, False, False)
+        if self._lift_s is not None:
+            found.append(IrGlitch(IR_GLITCHES[0], t_s, t_s - self._lift_s))
+            self._lift_s = None
+        distance = math.hypot(x_mm - self._accepted[0], y_mm - self._accepted[1])
+        held = distance > self.jump_mm
+        if held:
+            if self._jump is None:
+                self._jump = (t_s, distance)
+            if t_s - self._jump[0] >= self.reanchor_s:
+                # Never stuck for good: after this long the report is taken as where the finger is.
+                found.append(IrGlitch(IR_GLITCHES[2], t_s, t_s - self._jump[0], distance))
+                self._jump, held = None, False
+        elif self._jump is not None:
+            found.append(IrGlitch(IR_GLITCHES[1], t_s, t_s - self._jump[0], self._jump[1], "return"))
+            self._jump = None
+        if not held:
+            self._accepted = (x_mm, y_mm)
+        self.glitches = tuple(found)
+        return IrReading(*self._accepted, True, held)
+
+    def finish(self, t_s: float) -> IrGlitch | None:
+        """At the end of a trial: the rejection still in progress, if any. A pending short lift is not known yet."""
+        if self._jump is None:
+            return None
+        glitch = IrGlitch(IR_GLITCHES[1], t_s, t_s - self._jump[0], self._jump[1], "end")
+        self._jump = None
+        return glitch
 
 
 class PositionPlanner:
