@@ -298,7 +298,7 @@ analysis/
 ├── fit_psychometric.py  # Psychometric-function fitting (psignifit preferred, scipy MLE fallback),
 │                         # plotting, ideal-observer simulation. No pygame dependency; runs standalone
 │                         # on saved CSVs.
-├── trace_movement.py    # Per-attempt finger animations (and the earlier sample-count heat map)
+├── trace_movement.py    # Per-attempt finger animations (GIF/MP4)
 ├── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
 └── render_replay/       # Replays a recording through each render mode; edge errors in mm
 
@@ -359,12 +359,11 @@ Fit a saved session:
 python -m analysis.fit_psychometric experiment/data/P01_*_trials.csv --out fit.png
 ```
 
-Animate the finger path of every main-block trial and build the grid heat map
-from the session's trace (see *Movement trace* below):
+Animate the finger path of every main-block trial from the session's trace (see
+*Movement trace* below; heat maps come from `analysis/exploration_maps`):
 
 ```
 python -m analysis.trace_movement animate experiment/data/P01_<ts>_trace.sqlite3 --out out/P01/anim
-python -m analysis.trace_movement heatmap experiment/data/P01_<ts>_trace.sqlite3 --out out/P01/heat
 ```
 
 ### Trial log (`<session_id>_trials.csv`)
@@ -437,11 +436,10 @@ column and still load; opening one for writing adds the newer columns in place.
 `analysis/exploration_maps` uses the column instead of its lift-off estimate
 whenever it is present.
 
-#### Per-trial animation and grid heat map (`analysis/trace_movement.py`)
+#### Per-trial animation (`analysis/trace_movement.py`)
 
 ```
 python -m analysis.trace_movement animate TRACE [--trial N] [--include-practice] [--speed 2] [--fps 30] [--format gif|mp4] --out DIR
-python -m analysis.trace_movement heatmap TRACE [--cell-mm 2] [--margin-mm 15] [--metric visits|dwell_ms|samples] [--per-attempt] [--include-practice] --out DIR
 ```
 
 `animate` writes one GIF (or MP4, if `ffmpeg` is on the PATH) per attempt: the
@@ -449,16 +447,6 @@ two bars to scale in surface millimetres (reference blue, comparison green,
 taller side named in the title), the full path so far in grey, the last second
 in red, and the fingertip as a marker that is green while the electroadhesion
 signal is on. The HUD shows time, speed and the side being touched.
-
-`heatmap` lays a grid of `--cell-mm` cells over the bars plus `--margin-mm`
-around them, anchored on the bars' edges and the baseline so cell borders line
-up with bar borders. Each cell counts **visits** (how many times the finger
-entered the cell), **dwell_ms** (time spent in it) and raw **samples**. By
-default the whole main block is aggregated into one map with the reference
-height drawn solid and the tallest/shortest comparison dashed;
-`--per-attempt` writes one map per attempt with that trial's actual bars. Every
-map is saved as PNG and as a long-format CSV (`ix, iy, x0_mm .. y1_mm, visits,
-dwell_ms, samples`) for re-plotting or cross-participant comparison.
 
 #### Exploration maps (`analysis/exploration_maps/`)
 
