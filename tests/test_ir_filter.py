@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from experiment.config import ExperimentConfig, load_experiment_config
 from experiment.render_logic import IrGlitchFilter
 
 HZ = 60.0
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "experiment" / "configs" / "default.yaml"
 
 def feed(ir: IrGlitchFilter, reports: list[tuple[float, float, bool]]) -> tuple[list[tuple[float, float, bool]], list]:
     """(x, y, down) the renderer uses for each 60 Hz (x, y, down) report, and the glitches the filter ignored."""
@@ -101,4 +105,19 @@ def test_a_trial_that_starts_lifted_is_lifted_until_the_touchdown():
     ir = IrGlitchFilter()
     used, glitches = feed(ir, [(10, 10, False), (12, 10, False), (72, 140, True), (73, 140, True)])
     assert used == [(10, 10, False), (12, 10, False), (72, 140, True), (73, 140, True)]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"ir_lift_debounce_ms": -1.0}, {"ir_jump_mm": 0.0}, {"ir_jump_reanchor_ms": 0.0}],
+)
+def test_invalid_ir_filter_settings_are_rejected(overrides):
+    with pytest.raises(ValueError):
+        ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, **overrides)
+
+
+def test_the_filter_is_on_by_default_with_the_lab_settings():
+    for cfg in (load_experiment_config(CONFIG_PATH), ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0)):
+        assert cfg.ir_filter is True
+        assert (cfg.ir_lift_debounce_ms, cfg.ir_jump_mm, cfg.ir_jump_reanchor_ms) == (100.0, 20.0, 1000.0)
 
