@@ -1,0 +1,42 @@
+{
+  "label": "slide",
+  "seconds": 30.0,
+  "bias_s": 3.0,
+  "record_start_s": 339888.0657191,
+  "source": {
+    "device": "Dev1",
+    "first_channel": 0,
+    "terminal": "diff",
+    "range_v": 10.0
+  },
+  "calibration": null,
+  "calibration_file": null,
+  "load_unit": "V (uncalibrated)",
+  "bias_volts": [
+    -0.9561640838456285,
+    0.6233307051528347,
+    -2.082309410220287,
+    -2.3608948754482584,
+    -0.6458586812670765,
+    -0.8063878127134563
+  ],
+  "noise": {
+    "mean": 0.35477500894542907,
+    "sd": 0.1799941346640281,
+    "samples": 183
+  },
+  "thresholds": {
+    "on": 1.4347398169295977,
+    "off": 0.8947574129375133
+  },
+  "force_samples": 33541,
+  "force_error": null,
+  "clock_offset_s": -8.44994792714715e-06,
+  "frames": 2001,
+  "live_seconds_by_state": {
+    "both": 4.767,
+    "force_only": 0.0,
+    "ir_only": 25.206,
+    "neither": 0.0
+  }
+}

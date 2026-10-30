@@ -1,0 +1,42 @@
+{
+  "label": "explore",
+  "seconds": 30.0,
+  "bias_s": 3.0,
+  "record_start_s": 339933.296524,
+  "source": {
+    "device": "Dev1",
+    "first_channel": 0,
+    "terminal": "diff",
+    "range_v": 10.0
+  },
+  "calibration": null,
+  "calibration_file": null,
+  "load_unit": "V (uncalibrated)",
+  "bias_volts": [
+    -0.9086817340121243,
+    0.6142054490052937,
+    -1.9616048844134222,
+    -2.4136619359417693,
+    -0.7588070728739754,
+    -0.8207327420594263
+  ],
+  "noise": {
+    "mean": 0.4234254775314207,
+    "sd": 0.22755760334664357,
+    "samples": 183
+  },
+  "thresholds": {
+    "on": 1.7887710976112823,
+    "off": 1.1060982875713514
+  },
+  "force_samples": 33523,
+  "force_error": null,
+  "clock_offset_s": -7.550057489424944e-06,
+  "frames": 2007,
+  "live_seconds_by_state": {
+    "both": 7.632,
+    "force_only": 3.308,
+    "ir_only": 17.611,
+    "neither": 1.447
+  }
+}

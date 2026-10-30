@@ -1,0 +1,42 @@
+{
+  "label": "lifts",
+  "seconds": 30.0,
+  "bias_s": 3.0,
+  "record_start_s": 339988.6657057,
+  "source": {
+    "device": "Dev1",
+    "first_channel": 0,
+    "terminal": "diff",
+    "range_v": 10.0
+  },
+  "calibration": null,
+  "calibration_file": null,
+  "load_unit": "V (uncalibrated)",
+  "bias_volts": [
+    -1.0772538315403006,
+    0.6063109017460724,
+    -2.019176378927596,
+    -2.403661175503757,
+    -0.5480756915983607,
+    -0.8074450883709017
+  ],
+  "noise": {
+    "mean": 0.3229077828152765,
+    "sd": 0.41744943832035925,
+    "samples": 183
+  },
+  "thresholds": {
+    "on": 2.827604412737432,
+    "off": 1.5752560977763541
+  },
+  "force_samples": 33557,
+  "force_error": null,
+  "clock_offset_s": -7.1499962359666824e-06,
+  "frames": 1995,
+  "live_seconds_by_state": {
+    "both": 2.512,
+    "force_only": 0.033,
+    "ir_only": 18.932,
+    "neither": 8.512
+  }
+}
