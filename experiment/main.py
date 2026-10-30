@@ -1,10 +1,7 @@
 """Entry point for the tactile bar-height JND experiment.
 
-Two run modes, selected by ``ExperimentConfig.mode`` in the YAML config:
-
-- ``staircase_pilot``: a quick adaptive staircase at one base height, used to
-  locate the approximate JND before committing to a constant-stimuli range.
-- ``constant_stimuli``: the main method-of-constant-stimuli block.
+One run mode, ``constant_stimuli``: the method-of-constant-stimuli block,
+with its practice block first.
 
 ``--dry-run`` simulates an ideal observer end-to-end (no pygame, no
 hardware) to sanity-check that a config produces a reasonable psychometric
@@ -26,7 +23,6 @@ from . import constant_stimuli, data_logger
 from .config import ExperimentConfig, config_to_dict, load_experiment_config, write_config_snapshot
 from .constant_stimuli import TrialSpec, practice_passed, practice_required_correct, resolve_seed
 from .input_keys import is_continue_key, is_exit_key
-from .staircase import StairCase, pilot_range_check
 
 if TYPE_CHECKING:
     from .trace_recorder import AsyncTraceRecorder
@@ -41,13 +37,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _session_paths(cfg: ExperimentConfig, participant: str) -> tuple[str, Path, Path, Path]:
+def _session_paths(cfg: ExperimentConfig, participant: str) -> tuple[str, Path, Path]:
     data_dir = data_logger.ensure_data_dir()
     session_id = f"{participant}_{time.strftime('%Y%m%d_%H%M%S')}"
     trial_path = data_dir / f"{session_id}_trials.csv"
-    summary_path = data_dir / f"{session_id}_thresholds.csv"
     config_snapshot_path = data_dir / f"{session_id}_config.json"
-    return session_id, trial_path, summary_path, config_snapshot_path
+    return session_id, trial_path, config_snapshot_path
 
 
 def run_dry_run(cfg: ExperimentConfig) -> int:
@@ -94,59 +89,6 @@ def wait_for_continue_or_exit(screen, message: str) -> bool:
                     return False
                 if is_continue_key(event.key, pygame):
                     return True
-
-
-def run_staircase_pilot(
-    screen, clock, calibration, signal, cfg: ExperimentConfig, summary_path: Path, seed: int
-) -> None:
-    from . import trial as trial_module
-
-    staircase = StairCase(
-        start=cfg.staircase_dh_start_pct * cfg.base_height_mm,
-        step=cfg.staircase_dh_step_pct * cfg.base_height_mm,
-        min_val=cfg.staircase_dh_min_pct * cfg.base_height_mm,
-        n_reversals=cfg.staircase_n_reversals,
-        n_averaged=cfg.staircase_n_reversals_averaged,
-    )
-    trial_index = 1
-    import random
-
-    rng = random.Random(seed)
-
-    while not staircase.is_done():
-        spec = TrialSpec(
-            level_pct=staircase.current / cfg.base_height_mm,
-            comparison_height_mm=cfg.base_height_mm + staircase.current,
-            reference_height_mm=cfg.base_height_mm,
-            reference_side=rng.choice(["left", "right"]),
-            is_catch=False,
-            is_practice=False,
-        )
-        result = trial_module.run_trial(screen, clock, calibration, signal, cfg, spec, trial_index, fps=60)
-        if isinstance(result, trial_module.TrialAborted):
-            return
-        if isinstance(result, trial_module.TrialTimeout):
-            continue
-        staircase.update(result.correct)
-        trial_index += 1
-
-    threshold_mm = staircase.threshold()
-    threshold_pct = threshold_mm / cfg.base_height_mm
-    data_logger.append_summary(
-        {
-            "base_height_mm": cfg.base_height_mm,
-            "bar_width_mm": cfg.bar_width_mm,
-            "threshold_pct": f"{threshold_pct:.4f}",
-            "n_trials": trial_index - 1,
-            "n_reversals": len(staircase.reversals),
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        },
-        summary_path,
-    )
-    print(f"Pilot JND: {threshold_pct:.1%} of base height ({threshold_mm:.3f} mm)")
-    warning = pilot_range_check(threshold_pct, cfg.delta_max_pct)
-    if warning:
-        print(f"WARNING: {warning}")
 
 
 def _trial_row(
@@ -481,7 +423,7 @@ def run() -> int:
     if cfg.masking_noise:
         masking_noise.start(cfg.masking_noise_volume)
     clock = pygame.time.Clock()
-    session_id, trial_path, summary_path, config_snapshot_path = _session_paths(cfg, participant)
+    session_id, trial_path, config_snapshot_path = _session_paths(cfg, participant)
 
     screen = display.init_window(fullscreen=not args.windowed)
     current_calibration = calibration_module.make_configured_ir_frame_calibration(screen.get_size())
@@ -534,20 +476,17 @@ def run() -> int:
         ):
             return 0
 
-        if cfg.mode == "staircase_pilot":
-            run_staircase_pilot(screen, clock, current_calibration, signal, cfg, summary_path, resolved_seed)
-        else:
-            run_constant_stimuli(
-                screen,
-                clock,
-                current_calibration,
-                signal,
-                cfg,
-                session_id,
-                trial_path,
-                resolved_seed,
-                trace_recorder=trace_recorder,
-            )
+        run_constant_stimuli(
+            screen,
+            clock,
+            current_calibration,
+            signal,
+            cfg,
+            session_id,
+            trial_path,
+            resolved_seed,
+            trace_recorder=trace_recorder,
+        )
 
         if signal.error is not None:
             print(f"ERROR: the signal scheduler failed ({signal.error!r}); the session was aborted.")

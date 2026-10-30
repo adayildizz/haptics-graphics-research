@@ -92,21 +92,10 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("latency_compensation_ms", "Gecikme telafisi (ms)", "float"),
         ("signal_watchdog_ms", "Bekçi süresi (ms)", "float"),
     ]),
-    # Gerçek deney için kapatıldı: staircase_pilot modu panelde sunulmadığı için
-    # parametreleri de gösterilmiyor. Alanlar ExperimentConfig'te ve
-    # configs/pilot.yaml'da duruyor; geri açmak için bu grubun yorumunu kaldırın
-    # (mod seçimi de yukarıda geri açılmalı, yoksa pilot modu seçilemez).
-    # ("Staircase Pilot (sadece pilot modda)", [
-    #     ("staircase_dh_start_pct", "Başlangıç adımı (%)", "float"),
-    #     ("staircase_dh_min_pct", "Minimum adım (%)", "float"),
-    #     ("staircase_dh_step_pct", "Adım büyüklüğü (%)", "float"),
-    #     ("staircase_n_reversals", "Ters dönüş sayısı", "int"),
-    #     ("staircase_n_reversals_averaged", "Ortalanan ters dönüş", "int"),
-    # ]),
 ]
 
 # Yalnızca "mode" alanı geri açılırsa kullanılır (bkz. FIELD_GROUPS).
-MODE_CHOICES = ["constant_stimuli", "staircase_pilot"]
+MODE_CHOICES = ["constant_stimuli"]
 HAND_CHOICES = ["", "left", "right"]
 RENDER_CHOICES = list(RENDER_MODES)
 
@@ -128,8 +117,7 @@ FIELD_HELP: dict[str, str] = {
     "dominant_hand": "Katılımcının keşif için kullandığı el (işaret parmağı). Ok tuşları DİĞER elin "
     "altına konur: sağ elini kullanan sola, sol elini kullanan sağa. Kodu etkilemez; config snapshot'ına "
     "ve her CSV satırına yazılır ki analizde el/strateji ayrımı yapılabilsin.",
-    "mode": "constant_stimuli: ana sabit-uyaranlar bloğu. staircase_pilot: delta_max_pct aralığını "
-    "belirlemeden önce yaklaşık JND'yi bulmak için hızlı 1-yukarı/2-aşağı adaptif staircase.",
+    "mode": "constant_stimuli: ana sabit-uyaranlar bloğu (tek mod).",
     "base_height_mm": "Referans çubuğun yüksekliği. Karşılaştırma yükseklikleri bunun etrafında "
     "±delta_max_pct ile üretilir; oturum başına sabit tutulan bir tasarım parametresi (bkz. "
     "experiment/README.md: 'One base height ... fixed per session').",
@@ -141,8 +129,7 @@ FIELD_HELP: dict[str, str] = {
     "(config.py'deki doğrulama kuralına bakın).",
     "delta_max_pct": "En uç karşılaştırma seviyesinin referansa göre yüzde farkı (±); seviyeler bu "
     "değerin negatifinden pozitifine eşit aralıklarla üretilir. Belirli bir makaleye dayanmıyor -- "
-    "staircase_pilot modunda bulunan yaklaşık JND'nin ~1.5 katı civarı önerilir (pilot_range_check "
-    "uyarısına bakın); supervisor her oturumda ayarlar.",
+    "yaklaşık JND'nin ~1.5 katı civarı önerilir; supervisor her oturumda ayarlar.",
     "n_levels": "delta_max_pct aralığındaki linspace nokta sayısı. TEK sayı verilirse ortadaki 0% "
     "noktası düşer (include_zero_level kapalıyken): 7 ve ±30% → ±10/±20/±30, yani 6 gerçek seviye. "
     "Varsayılan 7 bu yüzden; 6 verilirse seviyeler ±6/±18/±30 olur ve alıştırma ±18'de koşar.",
@@ -201,8 +188,8 @@ FIELD_HELP: dict[str, str] = {
     "ideal_speed_tolerance_pct": "Hızın doğru sayılacağı hedef çevresindeki tolerans oranı. "
     "0.30 değeri, 100 mm/s hedef için 70-130 mm/s aralığı üretir.",
     "record_main_trace": "Alıştırma ve ana deneydeki parmak hareketlerini ayrı bir SQLite trace "
-    "dosyasına kaydeder (alıştırma denemeleri is_practice/practice_round ile etiketlenir). Staircase "
-    "kayıt edilmez; veritabanı yazımı ayrı worker thread'de yapılır. Animasyon için "
+    "dosyasına kaydeder (alıştırma denemeleri is_practice/practice_round ile etiketlenir). "
+    "Veritabanı yazımı ayrı worker thread'de yapılır. Animasyon için "
     "analysis/trace_movement.py bu dosyayı okur; oturum bitince analysis/exploration_maps ziyaret ve "
     "oyalanma haritalarını data/exploration_maps altına kendiliğinden kaydeder.",
     "render_mode": "Sinyalin ne zaman açılıp kapanacağına nasıl karar verildiği. predictive: parmağın hız "
@@ -238,17 +225,6 @@ FIELD_HELP: dict[str, str] = {
     "rng_seed": "Deneme sırasını karıştıran rastgele sayı üreteci tohumu. Boş bırakılırsa rastgele "
     "bir tohum seçilir; gerçekleşen tohum yine de tekrarlanabilirlik için config snapshot'ına "
     "kaydedilir.",
-    "staircase_dh_start_pct": "Sadece staircase_pilot modunda kullanılır: adaptif staircase'in "
-    "başlangıç adım büyüklüğü. Genel 1-yukarı/2-aşağı staircase pratiği (Levitt, 1971 tarzı "
-    "tasarımların ortak kuralı) -- bu depoya özgü bir referansa bağlı değil.",
-    "staircase_dh_min_pct": "Sadece staircase_pilot modunda kullanılır: adaptif adımın "
-    "küçülebileceği minimum büyüklük.",
-    "staircase_dh_step_pct": "Sadece staircase_pilot modunda kullanılır: her ters dönüşte adımın "
-    "ne kadar küçültüleceği.",
-    "staircase_n_reversals": "Sadece staircase_pilot modunda kullanılır: durmadan önce beklenecek "
-    "toplam ters dönüş sayısı.",
-    "staircase_n_reversals_averaged": "Sadece staircase_pilot modunda kullanılır: eşik hesabında "
-    "ortalamaya dahil edilecek son ters dönüş sayısı.",
 }
 
 
@@ -626,13 +602,6 @@ class LauncherApp:
                 if png_path is None:
                     self.plot_label.configure(text="Dry-run grafiği bulunamadı.", image="")
                     return
-            elif cfg.mode == "staircase_pilot":
-                self.plot_label.configure(
-                    image="",
-                    text="Pilot (staircase) modda çizilecek bir psychometric eğri yok; "
-                    "eşik değeri thresholds.csv'ye yazıldı.",
-                )
-                return
             else:
                 csv_path = self._newest_since_launch(DATA_DIR.glob(f"{cfg.participant_id}_*_trials.csv"))
                 if csv_path is None:

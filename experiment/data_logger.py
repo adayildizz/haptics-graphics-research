@@ -45,10 +45,6 @@ TRIAL_FIELDS = [
 #   aborted   -- exit key or closed window ended the trial (and the session)
 OUTCOMES = ("answered", "timeout", "exhausted", "aborted")
 
-# Staircase pilot-mode threshold summary (unchanged shape from the previous
-# staircase-only design, kept for mode == "staircase_pilot").
-SUMMARY_FIELDS = ["base_height_mm", "bar_width_mm", "threshold_pct", "n_trials", "n_reversals", "timestamp"]
-
 
 def ensure_data_dir(data_dir: Path = DATA_DIR) -> Path:
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -71,13 +67,6 @@ def append_trial(row: dict[str, Any], path: Path) -> None:
     with path.open("a", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=TRIAL_FIELDS)
         writer.writerow({field: serializable.get(field, "") for field in TRIAL_FIELDS})
-
-
-def append_summary(row: dict[str, Any], path: Path) -> None:
-    init_csv(path, SUMMARY_FIELDS)
-    with path.open("a", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=SUMMARY_FIELDS)
-        writer.writerow({field: row.get(field, "") for field in SUMMARY_FIELDS})
 
 
 def load_trials(path: Path) -> list[dict[str, Any]]:

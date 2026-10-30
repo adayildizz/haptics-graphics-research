@@ -58,9 +58,17 @@ def test_invalid_practice_speed_config_rejected(overrides):
         ExperimentConfig(**values)
 
 
-def test_load_pilot_yaml_config():
-    cfg = load_experiment_config("experiment/configs/pilot.yaml")
-    assert cfg.mode == "staircase_pilot"
+def test_the_removed_staircase_pilot_is_refused_and_its_old_settings_are_ignored(tmp_path):
+    old = tmp_path / "last_used.yaml"
+    old.write_text(
+        "base_height_mm: 100.0\nbar_width_mm: 20.0\nstaircase_dh_start_pct: 2.0\nstaircase_n_reversals: 12\n"
+    )
+    cfg = load_experiment_config(old)  # a config the GUI saved before the removal still loads
+    assert cfg.mode == "constant_stimuli" and cfg.bar_width_mm == 20.0
+    pilot = tmp_path / "pilot.yaml"
+    pilot.write_text("base_height_mm: 100.0\nbar_width_mm: 20.0\nmode: staircase_pilot\n")
+    with pytest.raises(ValueError, match="staircase_pilot.*removed"):
+        load_experiment_config(pilot)
 
 
 def test_unknown_config_key_rejected(tmp_path):
