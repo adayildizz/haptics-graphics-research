@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
-from .render_logic import RENDER_MODES
+from .render_logic import MIXED, RENDER_MODES
 
 # --- Hardware (signal generator) ---
 CARRIER_FREQUENCY = 125       # Hz
@@ -94,7 +94,12 @@ class ExperimentConfig:
     blind_test_mode: bool = False  # hide the bars/columns entirely; find them by touch only
 
     # Rendering (README: Rendering Method)
-    render_mode: str = "predictive"  # "predictive" | "position" | "timed_legacy"
+    render_mode: str = "predictive"  # "predictive" | "position" | "timed_legacy" | "kalman" | "mixed"
+    mixed_render_modes: tuple[str, ...] = ("predictive", "position", "kalman")  # render_mode "mixed" draws from these
+    kalman_accel_psd: float = 30000.0  # mm²/s³: how freely the finger changes speed; larger follows turns faster
+    kalman_meas_sd_mm: float = 0.2  # spread of one reported position
+    kalman_confidence: float = 0.9  # a crossing is timed ahead only if the finger is past the edge this surely
+    felt_gap_key: bool = False  # Down arrow / numpad 2 during a trial logs "felt a break in the signal"
     predict_window_samples: int = 3
     predict_horizon_factor: float = 1.5  # x the measured median sample interval
     predict_horizon_max_ms: float = 25.0
@@ -150,8 +155,16 @@ class ExperimentConfig:
             raise ValueError("practice_pass_fraction must be between 0 and 1")
         if not 0 <= self.masking_noise_volume <= 1:
             raise ValueError("masking_noise_volume must be between 0 and 1")
-        if self.render_mode not in RENDER_MODES:
-            raise ValueError(f"render_mode must be one of {RENDER_MODES}, got {self.render_mode!r}")
+        if self.render_mode not in (*RENDER_MODES, MIXED):
+            raise ValueError(f"render_mode must be one of {(*RENDER_MODES, MIXED)}, got {self.render_mode!r}")
+        # YAML gives a list; keep the frozen config hashable and printable the same way either way.
+        object.__setattr__(self, "mixed_render_modes", tuple(self.mixed_render_modes))
+        if not self.mixed_render_modes or not set(self.mixed_render_modes) <= set(RENDER_MODES):
+            raise ValueError(f"mixed_render_modes must be a non-empty subset of {RENDER_MODES}")
+        if self.kalman_accel_psd <= 0 or self.kalman_meas_sd_mm <= 0:
+            raise ValueError("kalman_accel_psd and kalman_meas_sd_mm must be > 0")
+        if not 0.5 <= self.kalman_confidence < 1:
+            raise ValueError("kalman_confidence must be >= 0.5 and < 1")
         if self.predict_window_samples < 2:
             raise ValueError("predict_window_samples must be >= 2")
         if self.predict_horizon_factor <= 0 or self.predict_horizon_max_ms <= 0:

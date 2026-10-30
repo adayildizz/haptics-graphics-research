@@ -1,4 +1,4 @@
-"""Command line: edge errors of the three render modes on a recorded or synthetic session."""
+"""Command line: edge errors and in-bar breaks of every render mode on a recorded or synthetic session."""
 
 from __future__ import annotations
 
@@ -121,6 +121,25 @@ def summarize(results: Sequence[tuple[str, dict[str, Outcome]]]) -> list[dict[st
                     "never_switched_off": sum(error.bridged for error in chosen),
                 }
             )
+        breaks = np.array([b for outcome in outcomes for b in outcome.breaks_ms])
+        inside_s = sum(outcome.inside_s for outcome in outcomes)
+        rate = len(breaks) / inside_s if inside_s > 0 else 0.0
+        rows.append(
+            {
+                "mode": mode,
+                "edge": "(breaks inside a bar: count / per s inside / median ms / max ms)",
+                "n": len(breaks),
+                "median_mm": "",
+                "p5_mm": "",
+                "p95_mm": "",
+                "max_abs_mm": "",
+                "never_switched_off": (
+                    f"{rate:.2f}/s, median {np.median(breaks):.1f} ms, max {breaks.max():.1f} ms"
+                    if len(breaks)
+                    else f"{rate:.2f}/s"
+                ),
+            }
+        )
         rows.append(
             {
                 "mode": mode,
@@ -159,6 +178,9 @@ def format_table(title: str, rows: Sequence[dict[str, object]]) -> str:
         f"  {'mode':13s} {'edge':27s} {'n':>4s} {'median':>8s} {'5%':>8s} {'95%':>8s} {'max |.|':>8s}  never off",
     ]
     for row in rows:
+        if row["median_mm"] == "" and str(row["edge"]).startswith("(breaks"):
+            lines.append(f"  {row['mode']:13s} breaks inside a bar: {row['n']} ({row['never_switched_off']})")
+            continue
         if row["median_mm"] == "":
             lines.append(f"  {row['mode']:13s} visits missed: {row['n']}, signal on away from any bar: {row['never_switched_off']}")
             continue
@@ -204,10 +226,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--horizon-max-ms", type=float, default=25.0)
     parser.add_argument("--min-speed", type=float, default=5.0)
     parser.add_argument("--latency-ms", type=float, default=0.0)
+    parser.add_argument("--kalman-psd", type=float, default=Params.kalman_accel_psd, help="kalman: mm²/s³")
+    parser.add_argument("--kalman-meas-sd", type=float, default=Params.kalman_meas_sd_mm, help="kalman: mm")
+    parser.add_argument("--kalman-confidence", type=float, default=Params.kalman_confidence)
     args = parser.parse_args(argv)
     if not args.synthetic and args.data is None:
         parser.error("give a trace file or folder, or --synthetic")
-    params = Params(args.window, args.horizon_factor, args.horizon_max_ms, args.min_speed, args.latency_ms)
+    params = Params(
+        args.window,
+        args.horizon_factor,
+        args.horizon_max_ms,
+        args.min_speed,
+        args.latency_ms,
+        kalman_accel_psd=args.kalman_psd,
+        kalman_meas_sd_mm=args.kalman_meas_sd,
+        kalman_confidence=args.kalman_confidence,
+    )
 
     reports: list[tuple[str, str, list[tuple[str, dict[str, Outcome]]]]] = []
     if args.synthetic:

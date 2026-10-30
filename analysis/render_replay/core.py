@@ -25,6 +25,9 @@ class Params:
     latency_ms: float = 0.0
     nominal_interval_s: float = 1.0 / 60.0
     position_quantum_mm: float = 0.2
+    kalman_accel_psd: float = 30000.0
+    kalman_meas_sd_mm: float = 0.2
+    kalman_confidence: float = 0.9
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,8 @@ class Outcome:
     errors: list[EdgeError]
     missed: int  # visits to a bar during which the mode never had the signal on
     spurious_ms: float  # signal on with the finger nowhere near the inside of a bar
+    breaks_ms: tuple[float, ...] = ()  # each time the signal went off and on again with the finger inside one bar
+    inside_s: float = 0.0  # time the finger spent inside a bar, the denominator for the break rate
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,19 @@ def planner_for(
         )
     if mode == "position":
         return rl.PositionPlanner(nominal)
+    if mode == "kalman":
+        return rl.KalmanPlanner(
+            nominal,
+            accel_psd=params.kalman_accel_psd,
+            meas_sd_mm=params.kalman_meas_sd_mm,
+            confidence=params.kalman_confidence,
+            horizon_factor=params.horizon_factor,
+            horizon_max_s=params.horizon_max_ms / 1000.0,
+            min_speed_mm_s=params.min_speed_mm_s,
+            latency_s=params.latency_ms / 1000.0,
+            nominal_interval_s=params.nominal_interval_s,
+            position_quantum_mm=params.position_quantum_mm,
+        )
     if mode == "timed_legacy":
         # The legacy rule tests the pixel-rounded rectangles; fall back to nominal when they are unknown.
         planner = rl.LegacyPlanner(pixel or nominal, bar_width_mm)
@@ -264,7 +282,8 @@ def evaluate(
 ) -> Outcome:
     """Match each true visit to the mode's on-interval and measure the entry and exit errors, per stretch of contact."""
     errors: list[EdgeError] = []
-    missed, spurious_ms = 0, 0.0
+    missed, spurious_ms, inside_s = 0, 0.0, 0.0
+    breaks_ms: list[float] = []
     for stretch in stretches(len(truth), down):
         # Where the finger went between two stretches is unknown: no visit, on-interval or on-time spans a lift, and
         # an end that a lift or touchdown cut short has no edge error, like one the recording cut short.
@@ -275,7 +294,9 @@ def evaluate(
         errors += outcome.errors
         missed += outcome.missed
         spurious_ms += outcome.spurious_ms
-    return Outcome(errors, missed, spurious_ms)
+        breaks_ms += outcome.breaks_ms
+        inside_s += outcome.inside_s
+    return Outcome(errors, missed, spurious_ms, tuple(breaks_ms), inside_s)
 
 
 def _evaluate_path(
@@ -285,9 +306,9 @@ def _evaluate_path(
     path = Path(truth)
     by_name = {bar.name: bar for bar in bars}
     start_s, end_s = truth[0].t_s, truth[-1].t_s
-    intervals = on_intervals(switches, end_s)
     visits = true_insides(truth, bars)
     spans = [_span(visit, start_s, end_s) for visit in visits]
+    intervals, breaks_ms = close_breaks(on_intervals(switches, end_s), spans)
     matches = _match(spans, intervals)
     errors: list[EdgeError] = []
     for index, (visit, matched) in enumerate(zip(visits, matches)):
@@ -320,7 +341,30 @@ def _evaluate_path(
             errors.append(EdgeError(mode, visit.bar, visit.exit.edge, False, t_out, late, 1000.0 * (off_s - t_out)))
     used = {matched for matched in matches if matched is not None}
     spurious_ms = 1000.0 * sum(b - a for i, (a, b) in enumerate(intervals) if i not in used)
-    return Outcome(errors, sum(matched is None for matched in matches), spurious_ms)
+    inside_s = sum(t_out - t_in for t_in, t_out in spans)
+    return Outcome(errors, sum(matched is None for matched in matches), spurious_ms, tuple(breaks_ms), inside_s)
+
+
+def close_breaks(
+    intervals: Sequence[tuple[float, float]], spans: Sequence[tuple[float, float]]
+) -> tuple[list[tuple[float, float]], list[float]]:
+    """Join on-intervals separated by an off-time that lies wholly inside one visit, and list those off-times in ms.
+
+    The finger was inside the bar throughout such an off-time, so it is a break in the bar, not an exit and a new
+    entry: joined, the visit keeps one on-interval for its edge errors, and the re-switch-on is not counted as
+    signal on away from a bar.
+    """
+    joined: list[tuple[float, float]] = []
+    breaks_ms: list[float] = []
+    for on_s, off_s in intervals:
+        if joined:
+            gap_from, gap_to = joined[-1][1], on_s
+            if gap_to > gap_from and any(t_in <= gap_from and gap_to <= t_out for t_in, t_out in spans):
+                breaks_ms.append(1000.0 * (gap_to - gap_from))
+                joined[-1] = (joined[-1][0], off_s)
+                continue
+        joined.append((on_s, off_s))
+    return joined, breaks_ms
 
 
 def contact_in(samples: Sequence[Sample], down: Sequence[bool] | None, bars: Sequence[Rect]) -> Contact:
@@ -353,7 +397,7 @@ def replay(
     truth: Sequence[Sample] | None = None,
     down: Sequence[bool] | None = None,
 ) -> dict[str, Outcome]:
-    """All three modes on one trial; ``truth`` defaults to the samples themselves, joined by straight lines.
+    """Every render mode on one trial; ``truth`` defaults to the samples themselves, joined by straight lines.
 
     ``down`` says per sample whether the finger was on the glass; without it, it never lifts. Contact is only known
     at the samples, so it cannot be combined with a separate truth.

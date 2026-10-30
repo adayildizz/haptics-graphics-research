@@ -25,7 +25,7 @@ import yaml
 from PIL import Image, ImageTk
 
 from .config import ExperimentConfig, config_to_dict, load_experiment_config
-from .render_logic import RENDER_MODES
+from .render_logic import MIXED, RENDER_MODES
 from .replay_tab import ReplayTab
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -108,7 +108,7 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
 # Yalnızca "mode" alanı geri açılırsa kullanılır (bkz. FIELD_GROUPS).
 MODE_CHOICES = ["constant_stimuli", "staircase_pilot"]
 HAND_CHOICES = ["", "left", "right"]
-RENDER_CHOICES = list(RENDER_MODES)
+RENDER_CHOICES = [*RENDER_MODES, MIXED]
 
 # "seconds" alanlarının spinbox sınırları. Panel sınırları; gerçek doğrulama
 # config.py'de (response_timeout_s > 0). Üst sınır, yanlışlıkla girilen bir
@@ -208,8 +208,10 @@ FIELD_HELP: dict[str, str] = {
     "render_mode": "Sinyalin ne zaman açılıp kapanacağına nasıl karar verildiği. predictive: parmağın hız "
     "vektöründen kenar geçiş anını tahmin eder ve sinyali o anda değiştirir (varsayılan). position: sinyal "
     "yalnızca son okunan konum barın içindeyken açıktır, tahmin yok. timed_legacy: eski kural (içerideyken "
-    "açık, çıkınca girişten itibaren genişlik/hız kadar daha açık); yalnızca karşılaştırma için. Seçilen mod "
-    "başlangıç ekranında, konsolda ve oturumun config kaydında görünür.",
+    "açık, çıkınca girişten itibaren genişlik/hız kadar daha açık); yalnızca karşılaştırma için. kalman: "
+    "position gibi, ama Kalman filtresi kenarın geçileceğinden yeterince eminse sinyali bir sonraki okumadan "
+    "önce değiştirir. mixed: her deneme mixed_render_modes listesinden bir mod alır (katılımcı bilmez; "
+    "ayarı YAML'da). Seçilen mod başlangıç ekranında, konsolda ve oturumun config kaydında görünür.",
     "predict_window_samples": "predictive modda hız vektörünün kaç konum örneği üzerinden doğrusal "
     "regresyonla kestirileceği. Konumu değişmemiş örnekler sayılmaz.",
     "predict_horizon_factor": "Tahminin ne kadar ileriye yapılacağı: ölçülen medyan örnek aralığının bu katı. "

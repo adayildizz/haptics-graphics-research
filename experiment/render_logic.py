@@ -10,7 +10,9 @@ from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-RENDER_MODES = ("predictive", "position", "timed_legacy")
+RENDER_MODES = ("predictive", "position", "timed_legacy", "kalman")
+# Not a mode of its own: each trial of the session is given one of the configured modes, unseen by the participant.
+MIXED = "mixed"
 EDGES = ("left", "right", "top", "bottom")
 
 
@@ -366,6 +368,139 @@ class PredictivePlanner:
         bar_name, edge = explain_switch(self._previous, here, self.bars, on)
         self._previous = here
         return Plan(sample.t_s, on, bar_name, edge, tuple(transitions), sample.x_mm, sample.y_mm, vx, vy, horizon)
+
+
+class AxisKalman:
+    """Position and velocity along one axis: a constant-velocity Kalman filter with white acceleration noise.
+
+    ``accel_psd`` (mm²/s³) says how freely the finger changes speed: larger follows turns faster, smaller smooths
+    more. ``meas_var`` (mm²) is the variance of one reported position.
+    """
+
+    def __init__(self, accel_psd: float, meas_var: float, initial_speed_sd_mm_s: float = 200.0) -> None:
+        self.q = accel_psd
+        self.r = meas_var
+        self.initial_var_v = initial_speed_sd_mm_s**2
+        self.t_s: float | None = None
+        self.p = self.v = 0.0
+        self.pp = self.pv = self.vv = 0.0  # covariance of (position, velocity)
+
+    def predict(self, t_s: float) -> None:
+        """Carry the state forward to ``t_s`` without a measurement."""
+        if self.t_s is None:
+            return
+        dt = t_s - self.t_s
+        if dt <= 0.0:
+            return
+        self.p += self.v * dt
+        self.pp += 2.0 * dt * self.pv + dt * dt * self.vv + self.q * dt**3 / 3.0
+        self.pv += dt * self.vv + self.q * dt**2 / 2.0
+        self.vv += self.q * dt
+        self.t_s = t_s
+
+    def update(self, t_s: float, z: float) -> None:
+        """Carry the state to ``t_s`` and fold in the position measured there."""
+        if self.t_s is None:
+            self.t_s, self.p, self.v = t_s, z, 0.0
+            self.pp, self.pv, self.vv = self.r, 0.0, self.initial_var_v
+            return
+        self.predict(t_s)
+        s = self.pp + self.r
+        kp, kv = self.pp / s, self.pv / s
+        innovation = z - self.p
+        self.p += kp * innovation
+        self.v += kv * innovation
+        pp, pv, vv = self.pp, self.pv, self.vv
+        self.pp, self.pv, self.vv = (1.0 - kp) * pp, (1.0 - kp) * pv, vv - kv * pv
+
+    def ahead(self, dt: float) -> tuple[float, float]:
+        """Mean and variance of the position ``dt`` seconds from now."""
+        variance = self.pp + 2.0 * dt * self.pv + dt * dt * self.vv + self.q * dt**3 / 3.0
+        return self.p + self.v * dt, variance
+
+
+class KalmanPlanner:
+    """The position mode, plus a switch timed ahead of the next sample only when the filter is confident.
+
+    The sample itself decides the state now, as in ``PositionPlanner``. A Kalman filter per axis estimates the
+    finger's velocity and how uncertain it is. An edge crossing within the horizon is scheduled only if, at the end
+    of the horizon, the finger is past that edge with probability ``confidence``. A slow sideways drift towards an
+    edge is too uncertain to clear that bar, so it no longer switches the signal off inside the bar; a decided
+    stroke across an edge still switches on time.
+    """
+
+    def __init__(
+        self,
+        bars: Sequence[Rect],
+        *,
+        accel_psd: float = 30000.0,
+        meas_sd_mm: float = 0.2,
+        confidence: float = 0.9,
+        horizon_factor: float = 1.5,
+        horizon_max_s: float = 0.025,
+        min_speed_mm_s: float = 5.0,
+        latency_s: float = 0.0,
+        nominal_interval_s: float = 1.0 / 60.0,
+        position_quantum_mm: float = 0.2,
+    ) -> None:
+        self.bars = tuple(bars)
+        self.horizon_factor = horizon_factor
+        self.horizon_max_s = horizon_max_s
+        self.latency_s = latency_s
+        self.z = statistics.NormalDist().inv_cdf(confidence)
+        self.x = AxisKalman(accel_psd, meas_sd_mm**2)
+        self.y = AxisKalman(accel_psd, meas_sd_mm**2)
+        # A repeated position this soon after the last change is a report that has not arrived yet, not a stop.
+        self.stale_s = position_quantum_mm / min_speed_mm_s if min_speed_mm_s > 0 else 0.25
+        self.clock = SampleClock(nominal_interval_s)
+        self._last: Sample | None = None
+        self._last_moved_s: float | None = None
+        self._previous: Sample | None = None
+
+    def plan(self, sample: Sample) -> Plan:
+        last, self._last = self._last, sample
+        repeated = last is not None and (sample.x_mm, sample.y_mm) == (last.x_mm, last.y_mm)
+        self.clock.add(sample.t_s, repeated)
+        if repeated and self._last_moved_s is not None and sample.t_s - self._last_moved_s <= self.stale_s:
+            self.x.predict(sample.t_s)
+            self.y.predict(sample.t_s)
+        else:
+            self.x.update(sample.t_s, sample.x_mm)
+            self.y.update(sample.t_s, sample.y_mm)
+            if not repeated:
+                self._last_moved_s = sample.t_s
+        vx, vy = self.x.v, self.y.v
+        horizon = horizon_s(self.clock.median_s(), self.horizon_factor, self.horizon_max_s)
+        # The position was measured ``latency_s`` ago, so the finger is already further along.
+        here = Sample(sample.t_s, sample.x_mm + vx * self.latency_s, sample.y_mm + vy * self.latency_s)
+        on = side_at(self.bars, here.x_mm, here.y_mm) is not None
+        fx, fy = self.x.p + vx * self.latency_s, self.y.p + vy * self.latency_s
+        transitions: list[Transition] = []
+        for bar in self.bars:
+            inside = path_inside(fx, fy, vx, vy, bar)
+            if inside is None:
+                continue
+            enter_s, enter_edge, exit_s, exit_edge = inside
+            if 0.0 < enter_s <= horizon and self._confident(bar, enter_edge, horizon):
+                transitions.append(Transition(sample.t_s + enter_s, True, bar.name, enter_edge))
+            if 0.0 < exit_s <= horizon and exit_s > max(enter_s, 0.0) and self._confident(bar, exit_edge, horizon):
+                transitions.append(Transition(sample.t_s + exit_s, False, bar.name, exit_edge))
+        transitions.sort(key=lambda transition: transition.t_s)
+        bar_name, edge = explain_switch(self._previous, here, self.bars, on)
+        self._previous = here
+        return Plan(sample.t_s, on, bar_name, edge, tuple(transitions), sample.x_mm, sample.y_mm, vx, vy, horizon)
+
+    def _confident(self, bar: Rect, edge: str, horizon: float) -> bool:
+        """Whether the finger is past ``edge`` at the end of the horizon with the configured probability."""
+        axis, line = {
+            "left": (self.x, bar.x0),
+            "right": (self.x, bar.x1),
+            "top": (self.y, bar.y_top),
+            "bottom": (self.y, bar.y_bottom),
+        }[edge]
+        mean, variance = axis.ahead(self.latency_s + horizon)
+        direction = 1.0 if axis.v > 0.0 else -1.0
+        return direction * (mean - line) >= self.z * math.sqrt(max(variance, 0.0))
 
 
 class LegacyTimer:

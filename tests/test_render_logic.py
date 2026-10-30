@@ -296,3 +296,56 @@ def test_module_loads_nothing_from_the_package_and_no_pygame_or_visa():
     repo_root = Path(__file__).resolve().parent.parent
     result = subprocess.run([sys.executable, "-c", code], cwd=repo_root, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout
+
+
+def test_axis_kalman_settles_on_a_constant_speed_and_grows_less_sure_between_reports():
+    axis = rl.AxisKalman(accel_psd=3e5, meas_var=0.04)
+    for k in range(30):
+        axis.update(k / 60.0, 100.0 * k / 60.0)  # 100 mm/s
+    assert axis.v == pytest.approx(100.0, abs=1.0)
+    _, variance_now = axis.ahead(0.0)
+    _, variance_later = axis.ahead(0.025)
+    assert variance_later > variance_now
+    axis.predict(30 / 60.0)  # no report: the state moves on, nothing is measured
+    assert axis.p == pytest.approx(50.0, abs=0.2)
+
+
+def kalman(bars, **overrides):
+    settings = dict(accel_psd=3e4, meas_sd_mm=0.2, confidence=0.9, position_quantum_mm=0.13)
+    settings.update(overrides)
+    return rl.KalmanPlanner(bars, **settings)
+
+
+def test_kalman_times_a_decided_stroke_across_an_edge_ahead_of_the_next_sample():
+    bars = rl.nominal_bars(194.0, 145.0, 40.0, 10.0, 10.0, 10.0)
+    left = bars[0]
+    planner = kalman(bars)
+    start = left.x0 - 150.0 * 29.5 / 60.0  # half a frame short of the edge at sample 29
+    plans = [planner.plan(Sample(k / 60.0, start + 150.0 * k / 60.0, 140.0)) for k in range(32)]
+    entries = [t for plan in plans for t in plan.transitions if t.on and t.edge == "left"]
+    assert entries, "a straight 150 mm/s stroke is certain enough to switch on before the sample inside"
+    first_inside = next(plan for plan in plans if plan.on)
+    assert entries[0].t_s < first_inside.t_s
+
+
+def test_kalman_does_not_switch_off_for_a_slow_drift_that_the_predictive_mode_takes_for_an_exit():
+    bars = rl.nominal_bars(194.0, 145.0, 40.0, 10.0, 10.0, 10.0)
+    left = bars[0]
+    # Scanning up the bar 1 mm from its right side while drifting towards it at 40 mm/s, then turning back.
+    path = [(left.x1 - 1.5 + 0.67 * min(k, 2) - 0.67 * max(k - 2, 0), 140.0 - 100.0 * k / 60.0) for k in range(6)]
+    samples = [Sample(k / 60.0, x, y) for k, (x, y) in enumerate(path)]
+    predictive = PredictivePlanner(bars, position_quantum_mm=0.13)
+    planner = kalman(bars)
+    predictive_exits = [t for s in samples for t in predictive.plan(s).transitions if not t.on]
+    kalman_exits = [t for s in samples for t in planner.plan(s).transitions if not t.on]
+    assert predictive_exits and not kalman_exits
+
+
+def test_kalman_takes_a_repeated_position_for_a_missing_report_and_keeps_moving():
+    bars = rl.nominal_bars(194.0, 145.0, 40.0, 10.0, 10.0, 10.0)
+    planner = kalman(bars)
+    for k in range(10):
+        planner.plan(Sample(k / 60.0, 20.0 + 100.0 * k / 60.0, 20.0))
+    planner.plan(Sample(10 / 60.0, 20.0 + 100.0 * 9 / 60.0, 20.0))  # same position: no new report yet
+    assert planner.x.v == pytest.approx(100.0, abs=5.0)
+    assert planner.x.p == pytest.approx(20.0 + 100.0 * 10 / 60.0, abs=0.5)
