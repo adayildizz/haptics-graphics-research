@@ -6,7 +6,8 @@ import argparse
 import csv
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -63,10 +64,21 @@ def _bars(attempt: Attempt, calibration: dict) -> tuple[tuple[Rect, Rect], tuple
     return nominal, pixel, max(1.0 / calibration["px_per_mm_x"], 1.0 / calibration["px_per_mm_y"])
 
 
-def replay_trace(data_path: Path, params: Params) -> tuple[list[tuple[str, dict[str, Outcome]]], Contact]:
-    """Every recorded attempt under ``data_path`` through the three modes, and the finger's lifts in them."""
-    results = []
-    contact = Contact()
+@dataclass(frozen=True)
+class Recorded:
+    """One recorded attempt, ready to replay."""
+
+    label: str
+    attempt: Attempt
+    samples: list[Sample]
+    down: list[bool] | None  # None: the trace has no contact column
+    nominal: tuple[Rect, Rect]
+    pixel: tuple[Rect, Rect] | None
+    quantum: float
+
+
+def recorded_trials(data_path: Path) -> Iterator[Recorded]:
+    """Every recorded attempt under ``data_path``, with its contact and bars."""
     for path in find_traces(data_path):
         calibrations = _calibrations(path)
         for attempt in load_trace(path):
@@ -75,10 +87,21 @@ def replay_trace(data_path: Path, params: Params) -> tuple[list[tuple[str, dict[
             # The column holds the live FrameDecision.finger_down, i.e. ContactGate's answer, so it is used as is.
             # Gating it again would take a trial that starts lifted, after an earlier trial showed touch, as down.
             down = None if attempt.contact is None else attempt.contact.tolist()
-            trial_params = Params(**{**params.__dict__, "position_quantum_mm": quantum})
             label = f"{attempt.session.session_id} {attempt.stem}"
-            results.append((label, replay(samples, nominal, pixel, attempt.bar_width_mm, trial_params, down=down)))
-            contact += contact_in(samples, down, nominal)
+            yield Recorded(label, attempt, samples, down, nominal, pixel, quantum)
+
+
+def replay_trace(data_path: Path, params: Params) -> tuple[list[tuple[str, dict[str, Outcome]]], Contact]:
+    """Every recorded attempt under ``data_path`` through the three modes, and the finger's lifts in them."""
+    results = []
+    contact = Contact()
+    for trial in recorded_trials(data_path):
+        trial_params = Params(**{**params.__dict__, "position_quantum_mm": trial.quantum})
+        bar_width_mm = trial.attempt.bar_width_mm
+        results.append(
+            (trial.label, replay(trial.samples, trial.nominal, trial.pixel, bar_width_mm, trial_params, down=trial.down))
+        )
+        contact += contact_in(trial.samples, trial.down, trial.nominal)
     return results, contact
 
 
