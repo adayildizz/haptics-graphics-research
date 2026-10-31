@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from experiment.demo_trace import ensure_demo_trace
 from experiment.replay_data import discover_trace_files, load_trace
-from experiment.replay_renderer import draw_attempt_frame
+from experiment.replay_renderer import CURSOR, draw_attempt_frame
 
 
 def test_demo_trace_loads_attempts_in_chronological_order(tmp_path):
@@ -64,6 +66,27 @@ def test_replay_frame_renders_without_opening_a_pygame_window(tmp_path):
 
     rgb = pygame.image.tostring(surface, "RGB")
     assert len(rgb) == 640 * 400 * 3
+
+
+def test_replay_hides_the_cursor_while_the_finger_is_lifted(tmp_path):
+    import pygame
+
+    path = ensure_demo_trace(tmp_path / "demo_replay_trace.sqlite3")
+    connection = sqlite3.connect(path)
+    connection.execute("UPDATE cursor_samples SET contact = 0 WHERE attempt_id = 1 AND sequence BETWEEN 20 AND 40")
+    connection.commit()
+    connection.close()
+    session = load_trace(path)
+    attempt = session.attempts[0]
+
+    def cursor_pixels(t_us: int) -> int:
+        surface = pygame.Surface((640, 400))
+        draw_attempt_frame(surface, session, attempt, t_us, surface.get_rect())
+        return pygame.transform.threshold(None, surface, CURSOR, (0, 0, 0, 0), set_behavior=0)
+
+    assert attempt.state_at(attempt.samples[30].t_us).contact is False
+    assert cursor_pixels(attempt.samples[10].t_us) > 0
+    assert cursor_pixels(attempt.samples[30].t_us) == 0
 
 
 def test_replay_prefers_recorded_correct_value(tmp_path):

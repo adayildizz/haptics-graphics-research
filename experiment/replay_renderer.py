@@ -97,7 +97,8 @@ def draw_attempt_frame(
     pygame.draw.rect(surface, TEXT, right_bar, 2)
     pygame.draw.rect(surface, HAPTIC_BORDER, active, 2)
 
-    if state is not None:
+    # While the finger is lifted the trace repeats the last touched position; no dot, so it does not look like a rest.
+    if state is not None and state.contact:
         cursor_pos = (sx(state.x_px), sy(state.y_px))
         pygame.draw.circle(surface, CURSOR, cursor_pos, max(5, round(9 * scale)))
 
@@ -119,9 +120,10 @@ def _draw_overlay(surface, session, attempt, state, t_us: int, viewport: pygame.
     current_s = min(t_us, attempt.duration_us) / 1_000_000
     speed = state.speed_mm_s if state else 0.0
     signal_on = bool(state and state.signal_on)
+    lifted = "   Finger lifted" if state is not None and not state.contact else ""
     details = body_font.render(
         f"{session.participant_id}   {current_s:05.2f}/{duration_s:05.2f} s   "
-        f"Speed {speed:05.1f} mm/s   Signal {'ON' if signal_on else 'OFF'}",
+        f"Speed {speed:05.1f} mm/s   Signal {'ON' if signal_on else 'OFF'}{lifted}",
         True,
         SIGNAL_ON if signal_on else SIGNAL_OFF,
     )
