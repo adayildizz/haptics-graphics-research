@@ -275,6 +275,7 @@ analysis/
 │                         # on saved CSVs.
 ├── trace_movement.py    # Per-attempt finger animations (GIF/MP4)
 ├── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
+├── exploration_timeline/ # Time-coloured finger paths and region-over-time strips per trial and session
 └── render_replay/       # Replays a recording through the position rule; edge errors in mm; top-edge cue sweep
 
 tests/                   # pytest: level generation, scheduling, psychometric-fit recovery
@@ -418,6 +419,11 @@ two bars to scale in surface millimetres (reference blue, comparison green,
 taller side named in the title), the full path so far in grey, the last second
 in red, and the fingertip as a marker that is green while the electroadhesion
 signal is on. The HUD shows time, speed and the side being touched.
+While the trace's `contact` flag says the finger is lifted, the path breaks,
+the marker is hidden and the HUD says `finger LIFTED`; without the break, a
+lift and a touch elsewhere would show as a stroke between the two points.
+Traces recorded before the flag existed (schema v3) are drawn as finger down
+throughout. Use `--speed 0.5` to play at half speed.
 
 #### Exploration maps (`analysis/exploration_maps/`)
 
@@ -457,6 +463,53 @@ the right. Output goes to `<data folder>/exploration_maps/<participant>/<session
   `none` gives plain sums. Only finished main-block trials are pooled.
 
 The supervisor GUI runs this for the session that just ended (see below).
+
+#### Exploration timeline (`analysis/exploration_timeline/`)
+
+```
+python -m analysis.exploration_timeline DATA [--participant ID|all] [--band-mm 4] [--overhang-mm 4]
+       [--arrow-every-mm 20] [--margin-mm 10] [--include-practice] [--out DIR]
+```
+
+The heat maps show where the finger went but not in which order. This tool
+shows the order. `DATA` is one `*_trace.sqlite3` file or a folder of them,
+opened read-only. Output goes to
+`<data folder>/exploration_timeline/<participant>/<session>/`:
+
+- **One figure per trial.** Left: the finger path over the bars, coloured from
+  blue (trial start) to red (response), with start and end marked and an
+  arrowhead every `--arrow-every-mm` of path. The line breaks while the finger
+  is lifted. Right: one lane per region with the stretches of time the finger
+  spent there; the total time and the number of entries are printed beside
+  each lane.
+- **`overview.png`.** One strip per trial, in recording order, on a shared
+  time axis. Colour says which bar: solid for its top edge, hatched for the
+  rest of that bar's regions.
+- **`segments.csv`.** Every run of consecutive samples in one region: start,
+  end, duration. A run lasts until the next run starts.
+
+Every sample falls in exactly one region; the first matching rule wins:
+
+1. *no contact*: the trace's `contact` column says the finger is lifted. A
+   recording without the column (before schema 3) is taken as finger down
+   throughout, so a cursor left where the finger last was shows up as time in
+   that region even if nothing touched the screen.
+2. *off the active surface*: outside the haptic area, e.g. below the bars'
+   baseline.
+3. *top edge, inside / outside* (per bar): within `--band-mm` below or above the
+   top edge. The band reaches `--overhang-mm` past the corners.
+4. *side edge, inside / outside* (per bar): within `--band-mm` of a side edge.
+5. *body*: inside the bar. *above*: over the bar, above the top band.
+6. *between the bars*, at any height; otherwise *outer sides*.
+
+Regions are named by role (reference, comparison), not by screen side.
+"Inside" regions are where the signal is on.
+
+The 4 mm band default is set for 20 mm bars. A moving finger travels a median
+2–2.6 mm between two frame reports, and a band narrower than that step is
+often jumped over; at 4 mm about 9 in 10 edge crossings leave a sample in the
+band. On 10 mm bars the two 4 mm side bands leave only a 2 mm body, so run
+recordings with 10 mm bars with `--band-mm 2.5 --overhang-mm 2.5`.
 
 #### Render replay (`analysis/render_replay/`)
 
