@@ -6,7 +6,6 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import replace
-from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -14,7 +13,7 @@ import pytest
 from render_harness import polyline, run_scripted_trial
 
 from analysis.render_replay import pulses, synthetic
-from analysis.render_replay.core import Params, contact_in, evaluate, planner_for, replay, simulate, submitted_plans
+from analysis.render_replay.core import MODE, contact_in, evaluate, replay, simulate, submitted_plans
 from analysis.render_replay.run import main, replay_synthetic, summarize
 from experiment import render_logic as rl
 from experiment.calibration import make_configured_ir_frame_calibration
@@ -27,6 +26,10 @@ HZ = 60.0
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "experiment" / "configs" / "default.yaml"
 BARS = rl.nominal_bars(194.0, 145.0, 40.0, 10.0, 10.0, 12.0)  # left 67-77 top 135, right 117-127 top 133
 LEFT = BARS[0]
+
+
+def new_planner() -> rl.PositionPlanner:
+    return rl.PositionPlanner(BARS)
 
 
 def finger(legs: list[tuple[float, float, float, float]], start: tuple[float, float], hold_s: float = 0.0) -> list[Sample]:
@@ -50,93 +53,54 @@ def seen_at_60hz(truth: list[Sample], phase_ms: int = 0, noise_mm: float = 0.0, 
     return [Sample(s.t_s, s.x_mm + rng.normal(0, noise_mm), s.y_mm + rng.normal(0, noise_mm)) for s in picked]
 
 
-def errors_by_mode(truth, phase_ms: int = 0, noise_mm: float = 0.0, seed: int = 0) -> dict[str, dict[tuple[str, bool], list[float]]]:
-    """late_mm per (edge, entering) for each mode, the finger being seen at 60 Hz."""
-    outcomes = replay(seen_at_60hz(truth, phase_ms, noise_mm, seed), BARS, None, 10.0, Params(), truth=truth)
-    table: dict[str, dict[tuple[str, bool], list[float]]] = {}
-    for mode, outcome in outcomes.items():
-        table[mode] = {}
-        for error in outcome.errors:
-            table[mode].setdefault((error.edge, error.entering), []).append(error.late_mm)
+def errors_by_edge(truth, phase_ms: int = 0, noise_mm: float = 0.0, seed: int = 0) -> dict[tuple[str, bool], list[float]]:
+    """late_mm per (edge, entering) for the position rule, the finger being seen at 60 Hz."""
+    outcome = replay(seen_at_60hz(truth, phase_ms, noise_mm, seed), BARS, truth=truth)[MODE]
+    table: dict[tuple[str, bool], list[float]] = {}
+    for error in outcome.errors:
+        table.setdefault((error.edge, error.entering), []).append(error.late_mm)
     return table
 
 
 @pytest.mark.parametrize("phase_ms", [0, 5, 11])
-def test_horizontal_pass_edge_errors_of_the_three_modes(phase_ms):
+def test_horizontal_pass_is_late_by_at_most_one_frame_at_each_edge(phase_ms):
     truth = finger([(35.0, 0.0, 100.0, 0.0)], (55.0, 140.0))
-    table = errors_by_mode(truth, phase_ms)
-    frame_mm = 100.0 / HZ
+    table = errors_by_edge(truth, phase_ms)
     for edge in (("left", True), ("right", False)):
-        assert abs(table["predictive"][edge][0]) < 0.02
-        assert 0.0 <= table["position"][edge][0] <= frame_mm + 0.01
-    # The timed rule starts its clock at the first frame inside, so it can only be as late or later.
-    assert table["timed_legacy"][("left", True)] == table["position"][("left", True)]
-    assert table["position"][("right", False)][0] <= table["timed_legacy"][("right", False)][0] <= 2 * frame_mm + 0.01
+        assert 0.0 <= table[edge][0] <= 100.0 / HZ + 0.01
 
 
 def test_upward_exit_through_the_top_edge():
     # Starts inside the left bar and leaves upward at 40 mm/s, then keeps going.
     truth = finger([(0.0, -30.0, 40.0, 0.0)], (72.0, 143.0))
-    outcomes = replay(seen_at_60hz(truth, 3), BARS, None, 10.0, Params(), truth=truth)
-    predictive, position, legacy = (outcomes[mode].errors[0] for mode in rl.RENDER_MODES)
-    assert (predictive.edge, predictive.entering) == ("top", False)
-    assert abs(predictive.late_mm) < 0.02
-    assert 0.0 <= position.late_mm <= 40.0 / HZ + 0.01 and position.height_effect_mm == position.late_mm
-    # The first frame is inside at speed 0, so the timed rule commands its 2 s maximum: on far above the bar.
-    assert legacy.bridged and legacy.late_mm > 15.0 and legacy.height_effect_mm > 15.0
+    (error,) = replay(seen_at_60hz(truth, 3), BARS, truth=truth)[MODE].errors
+    assert (error.edge, error.entering) == ("top", False)
+    assert 0.0 <= error.late_mm <= 40.0 / HZ + 0.01 and error.height_effect_mm == error.late_mm
 
 
 def test_downward_entry_through_the_top_edge():
     truth = finger([(0.0, 14.0, 30.0, 0.0)], (122.0, 125.0))  # right bar, top at 133 mm
-    outcomes = replay(seen_at_60hz(truth, 7), BARS, None, 10.0, Params(), truth=truth)
-    predictive, position, legacy = (outcomes[mode].errors[0] for mode in rl.RENDER_MODES)
-    assert (predictive.edge, predictive.entering) == ("top", True)
-    assert abs(predictive.late_mm) < 0.02
-    assert 0.0 <= position.late_mm <= 30.0 / HZ + 0.01
-    assert position.height_effect_mm == -position.late_mm  # switched on late: the bar feels shorter
-    assert legacy.late_mm == position.late_mm
+    (error,) = replay(seen_at_60hz(truth, 7), BARS, truth=truth)[MODE].errors
+    assert (error.edge, error.entering) == ("top", True)
+    assert 0.0 <= error.late_mm <= 30.0 / HZ + 0.01
+    assert error.height_effect_mm == -error.late_mm  # switched on late: the bar feels shorter
 
 
-def test_corner_cut_is_rendered_only_by_the_predictive_mode():
+def test_a_corner_cut_between_two_frames_is_missed():
     # In through the top of the left bar and out through its right side 5 ms later, between two frames.
     truth = finger([(21.0, 21.0, 141.42, 0.0)], (66.0, 124.5))
     recorded = truth[10 :: round(1000.0 / HZ)]
     inside = [s for s in recorded if LEFT.contains(s.x_mm, s.y_mm)]
     assert not inside, "pick a phase where no frame lands inside the bar"
-    outcomes = replay(recorded, BARS, None, 10.0, Params(), truth=truth)
-    assert outcomes["position"].missed == 1 and outcomes["timed_legacy"].missed == 1
-    assert outcomes["predictive"].missed == 0
-    cut = {(e.edge, e.entering): e.late_mm for e in outcomes["predictive"].errors}
-    assert set(cut) == {("top", True), ("right", False)}
-    assert all(abs(late) < 0.05 for late in cut.values())
+    outcome = replay(recorded, BARS, truth=truth)[MODE]
+    assert outcome.missed == 1 and outcome.errors == []
 
 
 def test_stopping_inside_a_bar_then_leaving():
     truth = finger([(17.0, 0.0, 100.0, 0.5), (15.0, 0.0, 100.0, 0.0)], (55.0, 140.0))  # stops at x = 72
-    table = errors_by_mode(truth, 2)
-    assert abs(table["predictive"][("left", True)][0]) < 0.02
-    # Leaving from rest: one frame to see the movement, then the exit is timed.
-    assert abs(table["predictive"][("right", False)][0]) < 0.02
-    assert 0.0 <= table["position"][("right", False)][0] <= 100.0 / HZ + 0.01
-
-
-def test_below_the_speed_threshold_all_modes_follow_the_sample():
-    truth = finger([(0.0, 4.0, 3.0, 0.0)], (72.0, 133.0))  # 3 mm/s down through the top at 135 mm
-    table = errors_by_mode(truth, 9)
-    late = {mode: table[mode][("top", True)][0] for mode in rl.RENDER_MODES}
-    assert late["predictive"] == late["position"] == late["timed_legacy"]
-    assert 0.0 <= late["position"] <= 3.0 / HZ + 0.01
-
-
-def test_noisy_positions_keep_the_predictive_mode_ahead_of_the_position_mode():
-    truth = finger([(35.0, 0.0, 100.0, 0.0)], (55.0, 140.0))
-    predictive, position = [], []
-    for seed in range(120):
-        table = errors_by_mode(truth, phase_ms=seed % 16, noise_mm=0.05, seed=seed)
-        predictive += table["predictive"].get(("left", True), []) + table["predictive"].get(("right", False), [])
-        position += table["position"].get(("left", True), []) + table["position"].get(("right", False), [])
-    assert abs(np.median(predictive)) < 0.1 and np.percentile(np.abs(predictive), 95) < 0.5
-    assert np.median(position) > 0.6
+    table = errors_by_edge(truth, 2)
+    assert 0.0 <= table[("left", True)][0] <= 100.0 / HZ + 0.01
+    assert 0.0 <= table[("right", False)][0] <= 100.0 / HZ + 0.01
 
 
 def test_top_edge_sign_convention():
@@ -153,29 +117,22 @@ def test_top_edge_sign_convention():
 
 
 def test_signal_left_on_between_two_visits_is_reported_with_how_far_the_finger_got():
-    # Down 3 mm into the bar at 20 mm/s (a 0.5 s timer), up 6 mm above its top and back within that time.
+    # Down 3 mm into the bar at 20 mm/s, up 6 mm above its top and back, with the signal never switched off.
     truth = finger([(0.0, 9.0, 20.0, 0.0), (0.0, -9.0, 60.0, 0.0), (0.0, 9.0, 60.0, 0.0)], (72.0, 129.0))
-    outcomes = replay(seen_at_60hz(truth, 1), BARS, None, 10.0, Params(), truth=truth)
-    held = [e for e in outcomes["timed_legacy"].errors if e.bridged]
+    held = [e for e in evaluate("x", [(20.3, True)], truth, BARS).errors if e.bridged]
     assert len(held) == 1 and held[0].edge == "top" and not held[0].entering
     assert held[0].late_mm == pytest.approx(6.0, abs=0.1) and held[0].height_effect_mm == held[0].late_mm
-    assert not any(e.bridged for e in outcomes["predictive"].errors)
-    assert max(abs(e.late_mm) for e in outcomes["predictive"].errors) < 0.2
 
 
-def test_synthetic_session_ranks_the_modes_and_latency_compensation_helps_against_the_finger():
-    rows = {(row["mode"], row["edge"]): row for row in summarize(replay_synthetic(Params(), against_finger=False))}
-    exits = [rows[(mode, "top edge, upward exit")]["median_mm"] for mode in rl.RENDER_MODES]
-    assert 0 <= exits[0] < exits[1] < exits[2]  # predictive < position < timed_legacy: felt height inflation
-    assert rows[("timed_legacy", "top edge, upward exit")]["never_switched_off"] > 0
-    assert rows[("predictive", "(visits with no signal at all / signal on away from any bar)")]["n"] == 0
+def test_synthetic_session_is_late_and_more_so_against_the_finger():
+    def rows(against_finger: bool) -> dict[str, dict[str, object]]:
+        return {row["edge"]: row for row in summarize(replay_synthetic(against_finger=against_finger))}
 
-    def entry_lag(latency_ms: float) -> float:
-        results = replay_synthetic(Params(latency_ms=latency_ms), against_finger=True)
-        return {(r["mode"], r["edge"]): r for r in summarize(results)}[("predictive", "side edge, entry")]["median_mm"]
-
-    assert entry_lag(0.0) > 0.4  # the recording cannot show this: the positions were already old when read
-    assert abs(entry_lag(6.0)) < 0.2
+    recording, finger_path = rows(False), rows(True)
+    assert {row["mode"] for row in recording.values()} == {MODE}
+    assert 0 <= recording["top edge, upward exit"]["median_mm"]  # on above the top: the bar feels taller
+    # The recording cannot show this: the positions were already old when read.
+    assert finger_path["side edge, entry"]["median_mm"] > recording["side edge, entry"]["median_mm"]
 
 
 def test_command_line_on_the_synthetic_session_and_on_a_recording(tmp_path, capsys):
@@ -185,7 +142,7 @@ def test_command_line_on_the_synthetic_session_and_on_a_recording(tmp_path, caps
     assert "oscilloscope" in printed and "signal_on column" in printed
     with (tmp_path / "out" / "synthetic_vs_recording_crossings.csv").open() as file:
         crossings = list(csv.DictReader(file))
-    assert {row["mode"] for row in crossings} == set(rl.RENDER_MODES)
+    assert {row["mode"] for row in crossings} == {MODE}
     assert {"top", "left", "right"} <= {row["edge"] for row in crossings}
     assert (tmp_path / "out" / "synthetic_vs_finger_summary.csv").exists()
 
@@ -233,12 +190,11 @@ def test_a_lift_inside_a_bar_ends_the_visit_without_an_exit_error():
     # In through the left side of the left bar, stops at x = 72, lifts; the cursor stays there and jumps on touchdown.
     path = polyline([(0, 55, 140), (17, 72, 140), (40, 72, 140), (41, 97, 140), (60, 105, 140)], 61)
     samples, down = recording(path, {25: False, 41: True})
-    lifted = replay(samples, BARS, None, 10.0, Params(), down=down)
-    unknown = replay(samples, BARS, None, 10.0, Params())
-    for mode in rl.RENDER_MODES:
-        assert kinds(lifted[mode].errors) == [("left", "left", True)]
-        assert lifted[mode].missed == 0 and lifted[mode].spurious_ms == 0
-        assert ("left", "right", False) in kinds(unknown[mode].errors)  # the jump, taken for a movement out of the bar
+    lifted = replay(samples, BARS, down=down)[MODE]
+    unknown = replay(samples, BARS)[MODE]
+    assert kinds(lifted.errors) == [("left", "left", True)]
+    assert lifted.missed == 0 and lifted.spurious_ms == 0
+    assert ("left", "right", False) in kinds(unknown.errors)  # the jump, taken for a movement out of the bar
     contact = contact_in(samples, down, BARS)
     assert (contact.lifts, contact.touch_starts, contact.lift_ends) == (1, 0, 1)
     assert contact.lifted_s == pytest.approx(16 / HZ) and contact.recorded_s == pytest.approx(60 / HZ)
@@ -248,10 +204,9 @@ def test_a_touchdown_elsewhere_draws_no_path_through_the_bar_in_between():
     # Lifted at x = 60, put down again at x = 100: the straight line between them runs through the left bar.
     path = polyline([(0, 50, 140), (10, 60, 140), (30, 60, 140), (31, 100, 140), (45, 105, 140)], 46)
     samples, down = recording(path, {12: False, 31: True})
-    lifted = replay(samples, BARS, None, 10.0, Params(), down=down)
-    for mode in rl.RENDER_MODES:
-        assert lifted[mode].errors == [] and lifted[mode].missed == 0 and lifted[mode].spurious_ms == 0
-    assert replay(samples, BARS, None, 10.0, Params())["position"].missed == 1  # an invented visit
+    lifted = replay(samples, BARS, down=down)[MODE]
+    assert lifted.errors == [] and lifted.missed == 0 and lifted.spurious_ms == 0
+    assert replay(samples, BARS)[MODE].missed == 1  # an invented visit
     assert contact_in(samples, down, BARS).lift_ends == 0
 
 
@@ -259,34 +214,26 @@ def test_the_signal_goes_off_at_the_first_lifted_sample_and_on_again_at_the_touc
     # Moving slowly inside the left bar; lifted for frames 10-19, put down again 2 mm further on.
     path = polyline([(0, 70, 140), (10, 72, 140), (19, 72, 140), (20, 74, 140), (30, 75.5, 140)], 31)
     samples, down = recording(path, {10: False, 20: True})
-    for mode in rl.RENDER_MODES:
-        new_planner = partial(planner_for, mode, BARS, None, 10.0, Params())
-        switches = simulate(submitted_plans(new_planner, samples, down))
-        assert switches == [(samples[0].t_s, True), (samples[10].t_s, False), (samples[20].t_s, True)]
-        assert simulate(submitted_plans(new_planner, samples)) == [(samples[0].t_s, True)]
-        outcome = replay(samples, BARS, None, 10.0, Params(), down=down)[mode]
-        assert outcome.errors == [] and outcome.missed == 0 and outcome.spurious_ms == 0
+    switches = simulate(submitted_plans(new_planner, samples, down))
+    assert switches == [(samples[0].t_s, True), (samples[10].t_s, False), (samples[20].t_s, True)]
+    assert simulate(submitted_plans(new_planner, samples)) == [(samples[0].t_s, True)]
+    outcome = replay(samples, BARS, down=down)[MODE]
+    assert outcome.errors == [] and outcome.missed == 0 and outcome.spurious_ms == 0
 
 
 def test_touching_down_inside_a_bar_switches_on_at_once_with_no_entry_error():
     # Lifted at x = 60 from the start, put down inside the right bar (117-127), then out through its right side.
     path = polyline([(0, 60, 140), (10, 60, 140), (11, 122, 140), (40, 140, 140)], 41)
     samples, down = recording(path, {0: False, 11: True})
-    outcomes = replay(samples, BARS, None, 10.0, Params(), down=down)
-    for mode in rl.RENDER_MODES:
-        new_planner = partial(planner_for, mode, BARS, None, 10.0, Params())
-        assert simulate(submitted_plans(new_planner, samples, down))[0] == (samples[11].t_s, True)
-        assert kinds(outcomes[mode].errors) == [("right", "right", False)]
-        assert outcomes[mode].missed == 0
-    # The live timer's speed at a touchdown spans the jump, so it runs out at once: off like the position mode.
-    legacy, position = outcomes["timed_legacy"].errors[0], outcomes["position"].errors[0]
-    assert not legacy.bridged and legacy.late_mm == position.late_mm
+    outcome = replay(samples, BARS, down=down)[MODE]
+    assert simulate(submitted_plans(new_planner, samples, down))[0] == (samples[11].t_s, True)
+    assert kinds(outcome.errors) == [("right", "right", False)]
+    assert outcome.missed == 0
     contact = contact_in(samples, down, BARS)
     assert (contact.lifts, contact.touch_starts, contact.lift_ends) == (0, 1, 0)
 
 
-@pytest.mark.parametrize("mode", rl.RENDER_MODES)
-def test_the_replay_takes_lifts_as_the_trial_loop_does(mode):
+def test_the_replay_takes_lifts_as_the_trial_loop_does():
     # The live loop on a scripted trial: lifted inside the left bar, down inside the right one and out of it,
     # lifted again and put down across the left bar. Replaying what it recorded gives the same state at every sample.
     calibration = make_configured_ir_frame_calibration((1920, 1080))
@@ -297,26 +244,16 @@ def test_the_replay_takes_lifts_as_the_trial_loop_does(mode):
         touch={0: True, 25: False, 40: True, 62: False, 70: True},
         end="left",
     )
-    cfg = replace(load_experiment_config(CONFIG_PATH), render_mode=mode)
+    cfg = load_experiment_config(CONFIG_PATH)
     _, attempt, _, _ = run_scripted_trial(cfg, calibration, spec, scenario)
     c = calibration
-    heights = (10.0, 12.0)
-    nominal = rl.nominal_bars(c.active_width_mm, c.active_height_mm, cfg.inter_bar_gap_mm, cfg.bar_width_mm, *heights)
-    pixel = rl.pixel_bars(
-        c.active_left_px, c.active_top_px, c.active_width_px, c.active_height_px, c.px_per_mm_x, c.px_per_mm_y,
-        cfg.inter_bar_gap_mm, cfg.bar_width_mm, *heights,
-    )  # fmt: skip
-    params = Params(
-        cfg.predict_window_samples, cfg.predict_horizon_factor, cfg.predict_horizon_max_ms, cfg.predict_min_speed_mm_s,
-        cfg.latency_compensation_ms, 1.0 / 60.0, max(1.0 / c.px_per_mm_x, 1.0 / c.px_per_mm_y),
-    )  # fmt: skip
+    nominal = rl.nominal_bars(c.active_width_mm, c.active_height_mm, cfg.inter_bar_gap_mm, cfg.bar_width_mm, 10.0, 12.0)
     samples = [Sample(s.t_us / 1e6, s.x_mm, s.y_mm) for s in attempt.samples]
     down = [s.contact for s in attempt.samples]
     assert not all(down)
-    new_planner = partial(planner_for, mode, nominal, pixel, cfg.bar_width_mm, params)
     live = [s.signal_on for s in attempt.samples]
-    assert [plan.on for plan in submitted_plans(new_planner, samples, down)] == live
-    assert [plan.on for plan in submitted_plans(new_planner, samples)] != live
+    assert [plan.on for plan in submitted_plans(lambda: rl.PositionPlanner(nominal), samples, down)] == live
+    assert [plan.on for plan in submitted_plans(lambda: rl.PositionPlanner(nominal), samples)] != live
 
 
 def test_command_line_reports_lifts_and_reads_a_trace_without_contact_as_always_down(tmp_path, capsys):

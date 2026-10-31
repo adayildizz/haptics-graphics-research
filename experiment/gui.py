@@ -25,7 +25,6 @@ import yaml
 from PIL import Image, ImageTk
 
 from .config import ExperimentConfig, config_to_dict, load_experiment_config
-from .render_logic import RENDER_MODES
 from .replay_tab import ReplayTab
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -35,7 +34,7 @@ DEFAULT_CONFIG_PATH = CONFIGS_DIR / "default.yaml"
 LAST_USED_PATH = CONFIGS_DIR / ".last_used.yaml"
 
 # (attribute, Turkish label, kind)
-# kind in {"float", "int", "optional_int", "bool", "mode", "hand", "render", "seconds", "str"}
+# kind in {"float", "int", "optional_int", "bool", "mode", "hand", "seconds", "str"}
 FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("Katılımcı", [
         ("participant_id", "Katılımcı ID", "str"),
@@ -84,12 +83,6 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("rng_seed", "RNG seed (boş = rastgele)", "optional_int"),
     ]),
     ("Sinyal Zamanlaması", [
-        ("render_mode", "Render modu", "render"),
-        ("predict_window_samples", "Hız kestirim penceresi (örnek)", "int"),
-        ("predict_horizon_factor", "Tahmin ufku (medyan örnek aralığının katı)", "float"),
-        ("predict_horizon_max_ms", "Tahmin ufku üst sınırı (ms)", "float"),
-        ("predict_min_speed_mm_s", "Tahmin için en düşük hız (mm/s)", "float"),
-        ("latency_compensation_ms", "Gecikme telafisi (ms)", "float"),
         ("signal_watchdog_ms", "Bekçi süresi (ms)", "float"),
     ]),
 ]
@@ -97,7 +90,6 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
 # Yalnızca "mode" alanı geri açılırsa kullanılır (bkz. FIELD_GROUPS).
 MODE_CHOICES = ["constant_stimuli"]
 HAND_CHOICES = ["", "left", "right"]
-RENDER_CHOICES = list(RENDER_MODES)
 
 # "seconds" alanlarının spinbox sınırları. Panel sınırları; gerçek doğrulama
 # config.py'de (response_timeout_s > 0). Üst sınır, yanlışlıkla girilen bir
@@ -192,20 +184,6 @@ FIELD_HELP: dict[str, str] = {
     "Veritabanı yazımı ayrı worker thread'de yapılır. Animasyon için "
     "analysis/trace_movement.py bu dosyayı okur; oturum bitince analysis/exploration_maps ziyaret ve "
     "oyalanma haritalarını data/exploration_maps altına kendiliğinden kaydeder.",
-    "render_mode": "Sinyalin ne zaman açılıp kapanacağına nasıl karar verildiği. predictive: parmağın hız "
-    "vektöründen kenar geçiş anını tahmin eder ve sinyali o anda değiştirir (varsayılan). position: sinyal "
-    "yalnızca son okunan konum barın içindeyken açıktır, tahmin yok. timed_legacy: eski kural (içerideyken "
-    "açık, çıkınca girişten itibaren genişlik/hız kadar daha açık); yalnızca karşılaştırma için. Seçilen mod "
-    "başlangıç ekranında, konsolda ve oturumun config kaydında görünür.",
-    "predict_window_samples": "predictive modda hız vektörünün kaç konum örneği üzerinden doğrusal "
-    "regresyonla kestirileceği. Konumu değişmemiş örnekler sayılmaz.",
-    "predict_horizon_factor": "Tahminin ne kadar ileriye yapılacağı: ölçülen medyan örnek aralığının bu katı. "
-    "Bunun ötesine asla tahmin yapılmaz.",
-    "predict_horizon_max_ms": "Tahmin ufkunun üst sınırı (ms).",
-    "predict_min_speed_mm_s": "Bu hızın altında tahmin yapılmaz; o an parmak içerideyse sinyal açık, "
-    "dışarıdaysa kapalıdır.",
-    "latency_compensation_ms": "Okunan konumun bu kadar ms önce ölçüldüğü varsayılır ve tahmin buna göre "
-    "ileri alınır. Cihazda gecikme ölçülmeden 0 bırakın.",
     "signal_watchdog_ms": "Ana döngüden bu süre boyunca plan gelmezse sinyal kapatılır ve trace'e "
     "signal_watchdog olayı yazılır.",
     "blind_test_mode": "Dokunulacak iki sütun tam ekran yüksekliğinde beyaz şeritlerle işaretlenir "
@@ -219,9 +197,8 @@ FIELD_HELP: dict[str, str] = {
     "peak' rig özelliğiyle eşleşir. UYARI: 50x amplifikatörle çarpılınca dokunma yüzeyinde ~100V'a "
     "çıkıyor -- yükseltmeden önce README'nin güvenlik notunu okuyun.",
     "ir_sample_hz_nominal": "IR çerçevenin nominal örnekleme hızı; README'de belirtilen Nexio "
-    "NIB170BP donanımının spesifikasyonu (~100 Hz), bir tasarım tercihi değil. Yazılım tabanlı "
-    "zamanlamanın (perf_counter) bu sınırlamayı nasıl aştığı README'nin 'Rendering Method' "
-    "bölümünde anlatılıyor.",
+    "NIB170BP donanımının spesifikasyonu (~100 Hz), bir tasarım tercihi değil. Konumun sinyal "
+    "kararlarına nasıl girdiği README'nin 'Rendering Method' bölümünde anlatılıyor.",
     "rng_seed": "Deneme sırasını karıştıran rastgele sayı üreteci tohumu. Boş bırakılırsa rastgele "
     "bir tohum seçilir; gerçekleşen tohum yine de tekrarlanabilirlik için config snapshot'ına "
     "kaydedilir.",
@@ -407,11 +384,6 @@ class LauncherApp:
             ttk.Combobox(parent, textvariable=var, values=HAND_CHOICES, state="readonly", width=22).grid(
                 row=row, column=1, sticky="w", pady=(6, 0)
             )
-        elif kind == "render":
-            var = tk.StringVar()
-            ttk.Combobox(parent, textvariable=var, values=RENDER_CHOICES, state="readonly", width=22).grid(
-                row=row, column=1, sticky="w", pady=(6, 0)
-            )
         elif kind == "seconds":
             var = tk.StringVar()
             # A spinbox so the limit can be nudged without retyping. ttk.Spinbox
@@ -462,7 +434,7 @@ class LauncherApp:
             raw = var.get()
             if kind == "bool":
                 kwargs[attr] = bool(raw)
-            elif kind in ("str", "mode", "hand", "render"):
+            elif kind in ("str", "mode", "hand"):
                 kwargs[attr] = str(raw).strip()
             elif kind == "optional_int":
                 text = str(raw).strip()

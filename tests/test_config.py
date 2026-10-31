@@ -91,33 +91,22 @@ def test_changing_yaml_changes_config_with_zero_code_edits(tmp_path):
     assert cfg.trials_per_level == 20
 
 
-def test_render_settings_default_to_predictive_and_reach_the_config_snapshot(tmp_path):
+def test_the_watchdog_setting_defaults_reaches_the_config_snapshot_and_is_validated(tmp_path):
     cfg = load_experiment_config(DEFAULT_CONFIG)
-    assert cfg.render_mode == "predictive"
-    assert (cfg.predict_window_samples, cfg.predict_horizon_factor, cfg.predict_horizon_max_ms) == (3, 1.5, 25.0)
-    assert (cfg.predict_min_speed_mm_s, cfg.latency_compensation_ms, cfg.signal_watchdog_ms) == (5.0, 0.0, 100.0)
+    assert cfg.signal_watchdog_ms == 100.0
     snapshot = tmp_path / "config.json"
     write_config_snapshot(cfg, snapshot)
-    saved = json.loads(snapshot.read_text())
-    for key in ("render_mode", "predict_window_samples", "predict_horizon_factor", "predict_horizon_max_ms",
-                "predict_min_speed_mm_s", "latency_compensation_ms", "signal_watchdog_ms"):  # fmt: skip
-        assert saved[key] == getattr(cfg, key)
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        {"render_mode": "timed"},
-        {"predict_window_samples": 1},
-        {"predict_horizon_factor": 0},
-        {"predict_horizon_max_ms": 0},
-        {"predict_min_speed_mm_s": -1},
-        {"latency_compensation_ms": -1},
-        {"signal_watchdog_ms": 0},
-    ],
-)
-def test_render_settings_are_validated(bad):
+    assert json.loads(snapshot.read_text())["signal_watchdog_ms"] == 100.0
     with pytest.raises(ValueError):
-        ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, **bad)
-    for mode in ("predictive", "position", "timed_legacy"):
-        assert ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, render_mode=mode).render_mode == mode
+        ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, signal_watchdog_ms=0)
+
+
+def test_the_removed_render_mode_settings_are_ignored_in_a_saved_config(tmp_path):
+    old = tmp_path / "last_used.yaml"
+    old.write_text(
+        "base_height_mm: 100.0\nbar_width_mm: 20.0\nrender_mode: predictive\npredict_window_samples: 3\n"
+        "predict_horizon_factor: 1.5\npredict_horizon_max_ms: 25.0\npredict_min_speed_mm_s: 5.0\n"
+        "latency_compensation_ms: 0.0\n"
+    )
+    cfg = load_experiment_config(old)  # a config the GUI saved before the removal still loads
+    assert cfg.bar_width_mm == 20.0 and not hasattr(cfg, "render_mode")

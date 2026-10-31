@@ -16,8 +16,6 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
-from .render_logic import RENDER_MODES
-
 # --- Hardware (signal generator) ---
 CARRIER_FREQUENCY = 125       # Hz
 PEAK_VOLTAGE = 4.0            # Vpp, before external amplification
@@ -44,10 +42,6 @@ HAPTIC_SURFACE_WIDTH_MM = 194.0
 HAPTIC_SURFACE_HEIGHT_MM = 145.0
 HAPTIC_SURFACE_LEFT_PADDING_MM = 23.0
 HAPTIC_SURFACE_TOP_PADDING_MM = 16.0
-
-# Rendering (rig behavior, not experimental design)
-MIN_SPEED_MM_S = 1.0
-MAX_SIGNAL_DURATION_S = 2.0
 
 
 @dataclass(frozen=True)
@@ -94,12 +88,6 @@ class ExperimentConfig:
     blind_test_mode: bool = False  # hide the bars/columns entirely; find them by touch only
 
     # Rendering (README: Rendering Method)
-    render_mode: str = "predictive"  # "predictive" | "position" | "timed_legacy"
-    predict_window_samples: int = 3
-    predict_horizon_factor: float = 1.5  # x the measured median sample interval
-    predict_horizon_max_ms: float = 25.0
-    predict_min_speed_mm_s: float = 5.0
-    latency_compensation_ms: float = 0.0
     signal_watchdog_ms: float = 100.0
 
     # Hardware
@@ -143,14 +131,6 @@ class ExperimentConfig:
             raise ValueError("practice_pass_fraction must be between 0 and 1")
         if not 0 <= self.masking_noise_volume <= 1:
             raise ValueError("masking_noise_volume must be between 0 and 1")
-        if self.render_mode not in RENDER_MODES:
-            raise ValueError(f"render_mode must be one of {RENDER_MODES}, got {self.render_mode!r}")
-        if self.predict_window_samples < 2:
-            raise ValueError("predict_window_samples must be >= 2")
-        if self.predict_horizon_factor <= 0 or self.predict_horizon_max_ms <= 0:
-            raise ValueError("predict_horizon_factor and predict_horizon_max_ms must be > 0")
-        if self.predict_min_speed_mm_s < 0 or self.latency_compensation_ms < 0:
-            raise ValueError("predict_min_speed_mm_s and latency_compensation_ms must be >= 0")
         if self.signal_watchdog_ms <= 0:
             raise ValueError("signal_watchdog_ms must be > 0")
         if self.dominant_hand not in ("", "left", "right"):
@@ -184,6 +164,13 @@ REMOVED_KEYS = frozenset(
         "staircase_dh_step_pct",
         "staircase_n_reversals",
         "staircase_n_reversals_averaged",
+        # The other render modes and their settings, kept on the render-modes branch.
+        "render_mode",
+        "predict_window_samples",
+        "predict_horizon_factor",
+        "predict_horizon_max_ms",
+        "predict_min_speed_mm_s",
+        "latency_compensation_ms",
     }
 )
 
@@ -191,7 +178,7 @@ REMOVED_KEYS = frozenset(
 def load_experiment_config(path: str | Path) -> ExperimentConfig:
     """Load an ``ExperimentConfig`` from a YAML or TOML file."""
     raw = _load_raw_config(Path(path))
-    # The staircase pilot's settings were removed; configs the GUI saved before still carry them.
+    # Removed settings (the staircase pilot, the other render modes); configs the GUI saved before still carry them.
     raw = {key: value for key, value in raw.items() if key not in REMOVED_KEYS}
     known = {f.name for f in fields(ExperimentConfig)}
     unknown = set(raw) - known

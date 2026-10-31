@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,8 +25,8 @@ LIFT = dict(
 )
 
 
-def config(**overrides):
-    return replace(load_experiment_config(CONFIG_PATH), **overrides)
+def config():
+    return load_experiment_config(CONFIG_PATH)
 
 
 def test_gate_trusts_contact_only_after_the_device_has_reported_a_touch():
@@ -38,7 +37,7 @@ def test_gate_trusts_contact_only_after_the_device_has_reported_a_touch():
 
 
 def test_samples_carry_contact_and_lifts_become_contact_events():
-    _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, LIFT)
+    _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, LIFT)
     contact = [sample.contact for sample in attempt.samples]
     assert contact[:30] == [True] * 30 and contact[30:50] == [False] * 20 and all(contact[50:])
     events = [(kind, payload) for _, kind, payload in attempt.events if kind.startswith("contact_")]
@@ -50,7 +49,7 @@ def test_samples_carry_contact_and_lifts_become_contact_events():
 def test_a_device_that_never_reports_touch_records_contact_as_unknown_and_warns_once(capsys):
     scenario = dict(path=polyline([(0, 55, 141), (40, 90, 141)], 41), end="left")
     for _ in range(2):
-        _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, scenario)
+        _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, scenario)
         assert all(sample.contact for sample in attempt.samples)
         assert not [kind for _, kind, _ in attempt.events if kind.startswith("contact_")]
     assert capsys.readouterr().out.count("has not reported a finger touching the surface") == 1
@@ -101,7 +100,7 @@ def test_heat_maps_use_the_recorded_contact_instead_of_guessing(tmp_path):
 
     import experiment.main as main_module
 
-    cfg = config(render_mode="position")
+    cfg = config()
     trace_path = tmp_path / "P11_touch_trace.sqlite3"
     recorder = AsyncTraceRecorder(trace_path)
     recorder.create_session(
@@ -142,27 +141,24 @@ def _writes(attempt):
     return [payload for _, kind, payload in attempt.events if kind == "signal_write"]
 
 
-@pytest.mark.parametrize("mode", ["predictive", "position", "timed_legacy"])
-def test_a_lifted_finger_switches_the_signal_off_in_every_mode(mode):
+def test_a_lifted_finger_switches_the_signal_off():
     # During frames 30-49 the cursor sits inside the left bar, but the finger is off the glass.
-    _, attempt, _, _ = run_scripted_trial(config(render_mode=mode), CALIBRATION, SPEC, LIFT)
+    _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, LIFT)
     on = [sample.signal_on for sample in attempt.samples]
     assert all(on[22:30]) and not any(on[30:50])
     assert not any(on[50:58])  # touched down again between the bars
     assert any(on[58:])  # and the right bar is felt as usual afterwards
-    if mode != "predictive":  # with a scripted clock only the immediate writes are deterministic
-        lift = [w for w in _writes(attempt) if w["edge"] == "lift"]
-        assert len(lift) == 1 and lift[0]["on"] is False and lift[0]["bar"] == "left"
+    lift = [w for w in _writes(attempt) if w["edge"] == "lift"]
+    assert len(lift) == 1 and lift[0]["on"] is False and lift[0]["bar"] == "left"
 
 
-@pytest.mark.parametrize("mode", ["predictive", "position", "timed_legacy"])
-def test_touching_down_inside_a_bar_switches_on_at_once_and_is_labelled(mode):
+def test_touching_down_inside_a_bar_switches_on_at_once_and_is_labelled():
     scenario = dict(
         path=polyline([(0, 72, 141), (9, 72, 141), (10, 122, 140), (30, 123, 140)], 31),
         touch={0: True, 5: False, 10: True},
         end="left",
     )
-    _, attempt, _, _ = run_scripted_trial(config(render_mode=mode), CALIBRATION, SPEC, scenario)
+    _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, scenario)
     on = [sample.signal_on for sample in attempt.samples]
     assert all(on[:5]) and not any(on[5:10]) and all(on[10:])
     touch = [w for w in _writes(attempt) if w["edge"] == "touch"]
@@ -171,15 +167,15 @@ def test_touching_down_inside_a_bar_switches_on_at_once_and_is_labelled(mode):
 
 def test_without_touch_reports_a_still_cursor_inside_a_bar_keeps_the_signal_on():
     scenario = dict(path=LIFT["path"], end="left")  # same path, but the device never reports touch
-    _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, scenario)
+    _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, scenario)
     on = [sample.signal_on for sample in attempt.samples]
     assert all(on[22:50])
     assert not [w for w in _writes(attempt) if w["edge"] in ("lift", "touch")]
 
 
 def test_once_the_device_has_reported_touch_the_next_trial_trusts_it_from_its_first_frame():
-    run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, LIFT)
+    run_scripted_trial(config(), CALIBRATION, SPEC, LIFT)
     hovering = dict(path=polyline([(0, 60, 141), (40, 90, 141)], 41), end="left")  # button never pressed
-    _, attempt, _, _ = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, hovering)
+    _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, hovering)
     assert not any(sample.signal_on for sample in attempt.samples)
     assert not any(sample.contact for sample in attempt.samples)

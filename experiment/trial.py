@@ -10,14 +10,14 @@ from typing import TYPE_CHECKING
 
 import pygame
 
-from . import audio_cues, display, stimulus
+from . import audio_cues, display
 from .calibration import DisplayCalibration
 from .config import ExperimentConfig
 from .constant_stimuli import TrialSpec
 from .input_keys import is_exit_key, response_for_key
 from .signal_scheduler import SignalScheduler
 from .trace_store import CursorSample
-from .trial_render import LEGACY, TrialRenderer
+from .trial_render import TrialRenderer
 
 if TYPE_CHECKING:
     from .speed_coach import PracticeSpeedCoach
@@ -90,17 +90,13 @@ class _PassTracker:
         self.passes: list[dict[str, Any]] = []
         self.side: str | None = None
         self.start_s = 0.0
-        self.commanded_s: float | None = 0.0
         self.entry_speed_mm_s = 0.0
         self.leading_edge_detected = True
 
-    def start(
-        self, side: str, now_s: float, speed_mm_s: float, commanded_s: float | None, sample_gap_s: float
-    ) -> None:
+    def start(self, side: str, now_s: float, speed_mm_s: float, sample_gap_s: float) -> None:
         self.finish(now_s)
         self.side = side
         self.start_s = now_s
-        self.commanded_s = commanded_s
         self.entry_speed_mm_s = speed_mm_s
         self.leading_edge_detected = sample_gap_s <= self.max_sample_gap_s
 
@@ -108,12 +104,9 @@ class _PassTracker:
         if self.side is None:
             return
         actual_s = max(0.0, now_s - self.start_s)
-        if self.commanded_s is not None:  # only the timed mode commands a duration
-            actual_s = min(self.commanded_s, actual_s)
         self.passes.append(
             {
                 "side": self.side,
-                "commanded_duration_s": self.commanded_s,
                 "actual_duration_s": actual_s,
                 "finger_speed_mm_s": self.entry_speed_mm_s,
                 "leading_edge_detected": self.leading_edge_detected,
@@ -175,7 +168,7 @@ def run_trial(
         speed_coach.reset_trial()
 
     tracker = _PassTracker(max_sample_gap_s=3.0 / cfg.ir_sample_hz_nominal)
-    renderer = TrialRenderer(cfg, calibration, layout, signal, trial_start, fps, trace_attempt)
+    renderer = TrialRenderer(cfg, calibration, layout, signal, trial_start, trace_attempt)
 
     def aborted(reason: str, now: float) -> TrialAborted:
         renderer.finish(reason, now)
@@ -307,11 +300,10 @@ def run_trial(
         x_mm = (pos[0] - calibration.active_left_px) / calibration.px_per_mm_x
         y_mm = (pos[1] - calibration.active_top_px) / calibration.px_per_mm_y
         # ``signal_on`` is what this frame asked for; the scheduler logs when the output really switched.
-        decision = renderer.frame(now, pos, x_mm, y_mm, speed_mm_s, contact)
+        decision = renderer.frame(now, pos, x_mm, y_mm, contact)
         signal_on, active_side = decision.signal_on, decision.active_side
         if active_side is not None and active_side != previous_side:
-            commanded_s = stimulus.stimulus_duration(cfg.bar_width_mm, speed_mm_s) if cfg.render_mode == LEGACY else None
-            tracker.start(active_side, now, speed_mm_s, commanded_s, elapsed)
+            tracker.start(active_side, now, speed_mm_s, elapsed)
         elif active_side is None and previous_side is not None:
             tracker.finish(now)
 
