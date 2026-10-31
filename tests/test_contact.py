@@ -27,7 +27,8 @@ LIFT = dict(
 
 
 def config(**overrides):
-    return replace(load_experiment_config(CONFIG_PATH), **overrides)
+    # These pin the lift rule itself, which the IR glitch filter only delays: with the filter off it must be as before.
+    return replace(load_experiment_config(CONFIG_PATH), **{"ir_filter": False, **overrides})
 
 
 def test_gate_trusts_contact_only_after_the_device_has_reported_a_touch():
@@ -57,8 +58,8 @@ def test_a_device_that_never_reports_touch_records_contact_as_unknown_and_warns_
     assert not trial_render.CONTACT.device_reports_touch
 
 
-def test_schema_v3_writes_contact_and_upgrades_older_files_in_place(tmp_path):
-    assert SCHEMA_VERSION == 3
+def test_schema_v4_writes_contact_and_what_was_used_and_upgrades_older_files_in_place(tmp_path):
+    assert SCHEMA_VERSION == 4
     path = tmp_path / "old_trace.sqlite3"
     # A schema-1 file: no contact, no is_practice / practice_round.
     connection = sqlite3.connect(path)
@@ -85,15 +86,18 @@ def test_schema_v3_writes_contact_and_upgrades_older_files_in_place(tmp_path):
     with TraceStore(path) as store:
         store.create_session(session_id="S", participant_id="P", started_at="t", config={}, calibration={}, app_version="x")
         attempt_id = store.start_attempt(AttemptDefinition("S", 1, 1, 0, 0.1, 11.0, 10.0, 10.0, "left", False))
-        store.append_samples(attempt_id, [CursorSample(0, 0, 16_667, 5, 6, 1.0, 2.0, 0.0, True, None, False, contact=False)])
+        sample = CursorSample(0, 0, 16_667, 5, 6, 1.0, 2.0, 0.0, True, None, False, contact=False)
+        store.append_samples(attempt_id, [replace(sample, used_x_mm=0.5, used_y_mm=2.5, used_contact=True)])
 
     connection = sqlite3.connect(path)
-    rows = dict(connection.execute("SELECT attempt_id, contact FROM cursor_samples").fetchall())
+    columns = "attempt_id, contact, used_x_mm, used_y_mm, used_contact"
+    rows = {row[0]: row[1:] for row in connection.execute(f"SELECT {columns} FROM cursor_samples")}
     version = connection.execute("SELECT value FROM trace_metadata WHERE key = 'schema_version'").fetchone()[0]
     practice = connection.execute("SELECT is_practice, practice_round FROM attempts").fetchone()
     connection.close()
-    assert rows == {99: 1, attempt_id: 0}  # the old sample keeps the implied "finger down"
-    assert version == "3" and practice == (0, 0)
+    # The old sample keeps the implied "finger down"; what the renderer used was not recorded then.
+    assert rows == {99: (1, None, None, None), attempt_id: (0, 0.5, 2.5, 1)}
+    assert version == "4" and practice == (0, 0)
 
 
 def test_heat_maps_use_the_recorded_contact_instead_of_guessing(tmp_path):

@@ -64,6 +64,37 @@ the movement trace). A driver that never reports touch keeps the earlier
 behaviour, so the stimulus is never silenced by a device that cannot say a
 finger is down.
 
+**IR glitches are filtered before this rule (`ir_filter: true`, the default).**
+On the rig the IR frame sometimes drops the touch while the finger stays on the
+glass: the button goes up for 17-48 ms, and the cursor often comes back 20-80 mm
+away, on a second object (another finger, the palm), for up to about 1 s. It also
+jumps by more than 20 mm in one frame with contact kept. Real finger speed is at
+most about 470 mm/s (p95), about 8 mm per frame, and real lifts lasted 167 ms or
+more. Without the filter every such lift switched the signal off with the finger
+on the bar. The filter (`IrGlitchFilter` in `render_logic.py`, used by
+`TrialRenderer.read`) works on the IR report alone, in two rules:
+
+1. *Lift debounce.* A lift counts only once the report has said "up" for
+   `ir_lift_debounce_ms`. Until then the finger is taken as down at the last
+   accepted position: no signal-off, no fresh start. A lift that lasts that long
+   is a real lift from then on, and the rule above applies, about 100 ms late
+   (with the finger off the glass, electroadhesion is not felt anyway).
+2. *Jump rejection.* While the finger is down, a report more than `ir_jump_mm`
+   from the last accepted position is rejected, and the last accepted position
+   is used instead; this includes the first report after an ignored lift. The
+   rejection ends when a report comes back within `ir_jump_mm`, or when it has
+   lasted `ir_jump_reanchor_ms`: that report is then accepted as the new
+   position, so the filter can never stick. A real lift ends it as well, and the
+   next touchdown is accepted wherever it is.
+
+Every mode, the timed rule's speed and the practice speed coach work from the
+filtered position. The trace keeps the raw report and what the renderer used
+side by side (see *Movement trace*). With `ir_filter: false` the program
+behaves exactly as before the filter. The filter cannot help when the frame does
+not see the finger at all for longer than the debounce (in the force check of
+30 October a still finger was never seen for 30 s, and the palm run lost the
+finger for 130 ms to 4.8 s several times); those losses are still real lifts.
+
 All four edges of a bar are treated alike (left, right, top, bottom), from any
 direction. `predictive` and `position` test the finger against the bars at
 their **configured millimetre size**; `timed_legacy` keeps the pixel-rounded
@@ -100,6 +131,10 @@ predict_horizon_max_ms: 25.0  # ... capped here; nothing is ever predicted beyon
 predict_min_speed_mm_s: 5.0   # slower: no prediction
 latency_compensation_ms: 0.0  # treat each position as this old and start the prediction further along
 signal_watchdog_ms: 100.0     # no plan from the trial loop for this long -> signal off
+ir_filter: true               # ignore the IR frame's short false lifts and jumps (above)
+ir_lift_debounce_ms: 100.0    # a lift counts only once it has lasted this long
+ir_jump_mm: 20.0              # a report this far from the last accepted position is rejected ...
+ir_jump_reanchor_ms: 1000.0   # ... until one comes back within that distance, or for this long at most
 ```
 
 Each bar crossing ("pass") is still logged per trial with its entry speed and
@@ -167,6 +202,14 @@ switch the generator's output off by hand.
   95th percentile stayed far below 1 ms. The timing check prints the count.
 - **The carrier limits edge precision.** One period of the 125 Hz carrier is
   8 ms, which is 0.8 mm at 100 mm/s.
+- **The jump rule cannot tell a second object from a stalled report.** The
+  frame sometimes repeats one position with contact kept and then reports the
+  finger further on. If the finger got more than `ir_jump_mm` away meanwhile,
+  that step is rejected like a jump to a second object, and the renderer stays
+  at the old position until a report comes back or the rejection is re-anchored
+  after `ir_jump_reanchor_ms`. Replayed on the 14 October session, 51 of 102
+  rejections ended in a re-anchor, and 39 of those followed such a stall at a
+  speed a finger can reach (at most 470 mm/s).
 
 ## Procedure
 
@@ -329,6 +372,7 @@ ideal_speed_tolerance_pct: 0.30
 record_main_trace: true   # practice attempts are traced too, tagged is_practice / practice_round
 
 render_mode: predictive   # predictive | position | timed_legacy; see "Rendering Method" for the rest
+ir_filter: true           # IR glitch filter; its settings are under "Rendering Method"
 
 masking_noise: true       # continuous brown noise in the headphones for the whole session
 masking_noise_volume: 0.30
@@ -414,6 +458,9 @@ start of the trial, taken from `time.perf_counter()`):
 | `sample_stats` | once per trial | sample count, interval min / median / p95 / max in ms, number and share of samples whose position had not changed, effective horizon, the scheduler's busy-wait margin, `mode` |
 | `signal_on`, `signal_off` | when the frame-level state changes | as before |
 | `contact_down`, `contact_up` | when the finger touches or leaves the glass | `active_side` |
+| `ir_lift_ignored` | when a lift shorter than `ir_lift_debounce_ms` ends | `duration_ms` (first "up" report to the next "down" one) |
+| `ir_jump_rejected` | when a jump rejection ends without a re-anchor | `distance_mm` (of the first rejected report), `duration_ms`, `ended` (`return`, `lift` or `end` of the trial) |
+| `ir_jump_reanchored` | when a rejection has lasted `ir_jump_reanchor_ms` | `distance_mm` (of the report then accepted), `duration_ms` |
 
 A trial is not closed until every write returned by the scheduler is in the trace.
 
@@ -429,6 +476,16 @@ first trial. `sample_stats` says which case applied
 column and still load; opening one for writing adds the newer columns in place.
 `analysis/exploration_maps` uses the column instead of its lift-off estimate
 whenever it is present.
+
+**What the renderer used (trace schema 4).** `x_mm`, `y_mm` and `contact` stay
+the raw IR report (`contact` through the gate above). `used_x_mm`, `used_y_mm`
+and `used_contact` hold what the renderer worked from after the IR glitch
+filter: the same values unless the filter ignored a glitch, and always the same
+with `ir_filter: false`. `speed_mm_s`, `active_side` and `signal_on` follow the
+used position. The `ir_*` events above mark each glitch the filter ignored.
+Recordings from schema 3 and earlier have no `used_*` columns; opening one for
+writing adds them, empty (NULL means not recorded). The session's
+`config_json` says whether the filter ran and with which settings.
 
 #### Per-trial animation (`analysis/trace_movement.py`)
 
@@ -537,7 +594,7 @@ recordings with 10 mm bars with `--band-mm 2.5 --overhang-mm 2.5`.
 
 ```
 python -m analysis.render_replay TRACE [--out DIR] [--window 3] [--horizon-factor 1.5] [--horizon-max-ms 25]
-       [--min-speed 5] [--latency-ms 0]
+       [--min-speed 5] [--latency-ms 0] [--ir-filter recorded|on|off]
 python -m analysis.render_replay --synthetic [--out DIR] ...
 ```
 
@@ -567,6 +624,15 @@ the time lifted, and how many visits began with a touchdown or ended with a lift
 inside a bar. Recordings without the column (schemas 1 and 2) are replayed as if
 the finger never lifted.
 
+**IR glitch filter.** A recording made with `ir_filter: true` is replayed
+through the same filter (`IrGlitchFilter`), with the settings in its
+`config_json`, before anything else, so the replay works from the positions and
+contact the renderer used and matches the trial loop sample by sample.
+`--ir-filter on` applies it to a recording made without it (with the session's
+settings if it has any, else the defaults), to see what it would have changed;
+`--ir-filter off` replays the raw report. The title line says whether it ran and
+counts what it ignored.
+
 `--synthetic` uses a built-in session with a known finger path and what a 60 Hz
 loop polling a 100 Hz frame would record of it, and prints two tables: judged
 as a recording would be, and judged against the finger path itself.
@@ -579,7 +645,7 @@ What the figures do not include:
 - How old a position already was when it was read is invisible in a recording.
   Only the second synthetic table shows it.
 - A lift the touch frame does not report is invisible too: the cursor's jump is
-  then taken for a movement.
+  then taken for a movement, unless the IR glitch filter rejects it.
 - Switches are assumed to happen at their planned instant. Scheduler lateness,
   the VISA write and the generator's own delay are not included; the last two
   need an oscilloscope.

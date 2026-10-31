@@ -37,6 +37,10 @@ predict_horizon_max_ms: 25.0     # ... but never more than this
 predict_min_speed_mm_s: 5.0      # slower than this: no prediction, the sample itself decides
 latency_compensation_ms: 0.0     # leave at 0 until the rig's latency has been measured
 signal_watchdog_ms: 100.0        # no plan from the main loop for this long -> signal off
+ir_filter: true                  # ignore the IR frame's short false lifts and jumps (README: Rendering Method)
+ir_lift_debounce_ms: 100.0       # a lift counts only once it has lasted this long
+ir_jump_mm: 20.0                 # a report this far from the last accepted position is rejected ...
+ir_jump_reanchor_ms: 1000.0      # ... until it comes back within that distance, or for this long at most
 
 carrier_freq_hz: 125.0
 voltage_peak: 4.0

@@ -13,12 +13,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-SCHEMA_VERSION = 3  # v2: attempts carry is_practice / practice_round; v3: cursor_samples.contact
-# Columns added after v1, with the value older recordings implicitly carried.
+# v2: attempts carry is_practice / practice_round; v3: cursor_samples.contact; v4: cursor_samples.used_*
+SCHEMA_VERSION = 4
+# Columns added after v1, with the value older recordings implicitly carried; NULL in used_*: not recorded.
 ADDED_COLUMNS = (
     ("attempts", "is_practice", "INTEGER NOT NULL DEFAULT 0"),
     ("attempts", "practice_round", "INTEGER NOT NULL DEFAULT 0"),
     ("cursor_samples", "contact", "INTEGER NOT NULL DEFAULT 1"),
+    ("cursor_samples", "used_x_mm", "REAL"),
+    ("cursor_samples", "used_y_mm", "REAL"),
+    ("cursor_samples", "used_contact", "INTEGER CHECK (used_contact IS NULL OR used_contact IN (0, 1))"),
 )
 
 AttemptOutcome = Literal["answered", "timeout", "aborted"]
@@ -41,6 +45,10 @@ class CursorSample:
     active_side: Side | None
     signal_on: bool
     contact: bool = True  # finger on the glass; also True while the device has not shown it reports touch
+    # What the renderer used in place of x_mm / y_mm / contact: the same, unless the IR glitch filter ignored a glitch.
+    used_x_mm: float | None = None
+    used_y_mm: float | None = None
+    used_contact: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +137,9 @@ class TraceStore:
                 active_side TEXT CHECK (active_side IS NULL OR active_side IN ('left', 'right')),
                 signal_on INTEGER NOT NULL CHECK (signal_on IN (0, 1)),
                 contact INTEGER NOT NULL DEFAULT 1 CHECK (contact IN (0, 1)),
+                used_x_mm REAL,
+                used_y_mm REAL,
+                used_contact INTEGER CHECK (used_contact IS NULL OR used_contact IN (0, 1)),
                 PRIMARY KEY (attempt_id, sequence)
             );
 
@@ -221,8 +232,9 @@ class TraceStore:
             INSERT INTO cursor_samples (
                 attempt_id, sequence, t_us, frame_dt_us,
                 x_px, y_px, x_mm, y_mm, speed_mm_s,
-                in_active_area, active_side, signal_on, contact
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                in_active_area, active_side, signal_on, contact,
+                used_x_mm, used_y_mm, used_contact
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -239,6 +251,9 @@ class TraceStore:
                     sample.active_side,
                     int(sample.signal_on),
                     int(sample.contact),
+                    sample.used_x_mm,
+                    sample.used_y_mm,
+                    None if sample.used_contact is None else int(sample.used_contact),
                 )
                 for sample in samples
             ],

@@ -102,6 +102,12 @@ class ExperimentConfig:
     latency_compensation_ms: float = 0.0
     signal_watchdog_ms: float = 100.0
 
+    # IR glitch filter (README: Rendering Method)
+    ir_filter: bool = True
+    ir_lift_debounce_ms: float = 100.0  # a shorter lift is ignored
+    ir_jump_mm: float = 20.0  # a report this far from the last accepted position is rejected ...
+    ir_jump_reanchor_ms: float = 1000.0  # ... until it comes back, or for this long at most
+
     # Hardware
     carrier_freq_hz: float = 125.0
     voltage_peak: float = 4.0
@@ -153,6 +159,10 @@ class ExperimentConfig:
             raise ValueError("predict_min_speed_mm_s and latency_compensation_ms must be >= 0")
         if self.signal_watchdog_ms <= 0:
             raise ValueError("signal_watchdog_ms must be > 0")
+        if self.ir_lift_debounce_ms < 0:
+            raise ValueError("ir_lift_debounce_ms must be >= 0")
+        if self.ir_jump_mm <= 0 or self.ir_jump_reanchor_ms <= 0:
+            raise ValueError("ir_jump_mm and ir_jump_reanchor_ms must be > 0")
         if self.dominant_hand not in ("", "left", "right"):
             raise ValueError("dominant_hand must be 'left', 'right', or empty")
         if self.mode == "staircase_pilot":

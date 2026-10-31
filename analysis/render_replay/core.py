@@ -112,6 +112,26 @@ def stretches(count: int, down: Sequence[bool] | None) -> list[Stretch]:
     return found
 
 
+def filter_ir(
+    samples: Sequence[Sample], down: Sequence[bool] | None, ir: rl.IrGlitchFilter
+) -> tuple[list[Sample], list[bool] | None, list[rl.IrGlitch]]:
+    """What the trial loop's renderer used: the recording through a fresh IR glitch filter, as TrialRenderer.read does.
+
+    Returns the positions and contact the renderer used, and the glitches the filter ignored, the one still being
+    rejected when the recording ends included. Without a contact column only jumps can be filtered.
+    """
+    used: list[Sample] = []
+    used_down: list[bool] = []
+    glitches: list[rl.IrGlitch] = []
+    for index, sample in enumerate(samples):
+        reading = ir.step(sample.t_s, sample.x_mm, sample.y_mm, True if down is None else down[index])
+        used.append(Sample(sample.t_s, reading.x_mm, reading.y_mm))
+        used_down.append(reading.down)
+        glitches += ir.glitches
+    last = ir.finish(samples[-1].t_s) if samples else None
+    return used, None if down is None else used_down, glitches + ([last] if last else [])
+
+
 def planner_for(
     mode: str,
     nominal: Sequence[Rect],

@@ -91,6 +91,10 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("predict_min_speed_mm_s", "Tahmin için en düşük hız (mm/s)", "float"),
         ("latency_compensation_ms", "Gecikme telafisi (ms)", "float"),
         ("signal_watchdog_ms", "Bekçi süresi (ms)", "float"),
+        ("ir_filter", "IR hata filtresi", "bool"),
+        ("ir_lift_debounce_ms", "Bundan kısa kalkışları yok say (ms)", "float"),
+        ("ir_jump_mm", "Bundan uzun sıçramaları reddet (mm)", "float"),
+        ("ir_jump_reanchor_ms", "Sıçrama reddi en fazla (ms)", "float"),
     ]),
 ]
 
@@ -208,6 +212,17 @@ FIELD_HELP: dict[str, str] = {
     "ileri alınır. Cihazda gecikme ölçülmeden 0 bırakın.",
     "signal_watchdog_ms": "Ana döngüden bu süre boyunca plan gelmezse sinyal kapatılır ve trace'e "
     "signal_watchdog olayı yazılır.",
+    "ir_filter": "IR çerçeve, parmak camdayken bazen dokunmayı kısa süre bırakır ya da ikinci bir cisme (başka "
+    "parmak, avuç) atlar. Açıkken bu hatalar yok sayılır: kısa kalkışlarda sinyal kesilmez, imkânsız "
+    "sıçramalarda son kabul edilen konum kullanılır. Kapalıyken davranış filtreden önceki gibidir. Trace ham "
+    "raporu (x_mm, y_mm, contact) ve kullanılanı (used_*) ayrı kaydeder.",
+    "ir_lift_debounce_ms": "Bir kalkış ancak bu kadar sürdükten sonra gerçek sayılır; daha kısası yok sayılır "
+    "ve parmak son kabul edilen konumda temas halinde kabul edilir. Gerçek kalkışlarda sinyal en fazla bu "
+    "kadar geç kapanır (parmak camda değilken EA hissedilmez).",
+    "ir_jump_mm": "Temas sürerken son kabul edilen konumdan bu mesafeden daha uzaktaki rapor reddedilir. "
+    "Gerçek parmak hızı ~470 mm/s (p95), yani karede ~8 mm.",
+    "ir_jump_reanchor_ms": "Sıçrama reddi en fazla bu kadar sürer; sonra o anki rapor yeni konum olarak kabul "
+    "edilir, böylece filtre hiçbir zaman takılı kalmaz.",
     "blind_test_mode": "Dokunulacak iki sütun tam ekran yüksekliğinde beyaz şeritlerle işaretlenir "
     "(konumlarını bulmak kör bir arama olmasın diye), ama şeritlerin içindeki gerçek yükseklik "
     "çubukları hiç çizilmez -- yükseklik test edilen şey olduğu için ekrandan okunamamalı, sadece "

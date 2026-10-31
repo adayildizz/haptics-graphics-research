@@ -291,9 +291,13 @@ def run_trial(
             )
 
         pos = pygame.mouse.get_pos()
+        x_mm = (pos[0] - calibration.active_left_px) / calibration.px_per_mm_x
+        y_mm = (pos[1] - calibration.active_top_px) / calibration.px_per_mm_y
+        # Through the IR glitch filter: from here on the frame works with what the renderer takes from the report.
+        finger = renderer.read(now, pos, x_mm, y_mm, contact)
         elapsed = max(now - last_time, 1e-6)
-        dx = (pos[0] - last_pos[0]) / calibration.px_per_mm_x
-        dy = (pos[1] - last_pos[1]) / calibration.px_per_mm_y
+        dx = (finger.pos[0] - last_pos[0]) / calibration.px_per_mm_x
+        dy = (finger.pos[1] - last_pos[1]) / calibration.px_per_mm_y
         speed_mm_s = ((dx * dx + dy * dy) ** 0.5) / elapsed
 
         if speed_coach is not None and spec.is_practice:
@@ -304,10 +308,8 @@ def run_trial(
                 in_active_area=layout.haptic_area.collidepoint(pos),
             )
 
-        x_mm = (pos[0] - calibration.active_left_px) / calibration.px_per_mm_x
-        y_mm = (pos[1] - calibration.active_top_px) / calibration.px_per_mm_y
         # ``signal_on`` is what this frame asked for; the scheduler logs when the output really switched.
-        decision = renderer.frame(now, pos, x_mm, y_mm, speed_mm_s, contact)
+        decision = renderer.frame(now, finger, speed_mm_s)
         signal_on, active_side = decision.signal_on, decision.active_side
         if active_side is not None and active_side != previous_side:
             commanded_s = stimulus.stimulus_duration(cfg.bar_width_mm, speed_mm_s) if cfg.render_mode == LEGACY else None
@@ -331,6 +333,9 @@ def run_trial(
                     active_side=active_side,
                     signal_on=signal_on,
                     contact=decision.finger_down,
+                    used_x_mm=finger.x_mm,
+                    used_y_mm=finger.y_mm,
+                    used_contact=finger.down,
                 )
             )
             trace_sequence += 1
@@ -356,6 +361,6 @@ def run_trial(
         )
         pygame.display.flip()
         previous_side = active_side
-        last_pos = pos
+        last_pos = finger.pos
         last_time = now
         clock.tick(fps)

@@ -17,7 +17,7 @@ from experiment import render_logic as rl
 from experiment.render_logic import Rect, Sample
 
 from . import pulses, synthetic
-from .core import Contact, Outcome, Params, contact_in, replay
+from .core import Contact, Outcome, Params, contact_in, filter_ir, replay
 
 CATEGORIES = (
     "side edge, entry",
@@ -37,13 +37,33 @@ CAVEATS = (
 )
 
 
-def _calibrations(path: Path) -> dict[str, dict]:
+IR_FILTER_CHOICES = ("recorded", "on", "off")
+
+
+def _sessions(path: Path) -> dict[str, tuple[dict, dict]]:
+    """(calibration, config) of each session in a trace."""
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
-        rows = connection.execute("SELECT session_id, calibration_json FROM sessions").fetchall()
+        rows = connection.execute("SELECT session_id, calibration_json, config_json FROM sessions").fetchall()
     finally:
         connection.close()
-    return {session_id: json.loads(calibration) for session_id, calibration in rows}
+    return {session_id: (json.loads(calibration), json.loads(config)) for session_id, calibration, config in rows}
+
+
+def ir_filter_for(config: dict, choice: str = "recorded") -> rl.IrGlitchFilter | None:
+    """A fresh IR glitch filter as the session ran it ("recorded"), or forced "on" / "off".
+
+    Forced on for a recording made without it, the filter takes the session's settings if it has any, else the
+    defaults, which are the experiment's.
+    """
+    if choice == "off" or (choice == "recorded" and not config.get("ir_filter", False)):
+        return None
+    defaults = rl.IrGlitchFilter()
+    return rl.IrGlitchFilter(
+        config.get("ir_lift_debounce_ms", 1000.0 * defaults.lift_debounce_s) / 1000.0,
+        config.get("ir_jump_mm", defaults.jump_mm),
+        config.get("ir_jump_reanchor_ms", 1000.0 * defaults.reanchor_s) / 1000.0,
+    )
 
 
 def _bars(attempt: Attempt, calibration: dict) -> tuple[tuple[Rect, Rect], tuple[Rect, Rect] | None, float]:
@@ -75,34 +95,46 @@ class Recorded:
     nominal: tuple[Rect, Rect]
     pixel: tuple[Rect, Rect] | None
     quantum: float
+    # Through the IR glitch filter, ``samples`` and ``down`` are what the renderer used, and these what it ignored.
+    glitches: tuple[rl.IrGlitch, ...] | None = None  # None: not filtered
 
 
-def recorded_trials(data_path: Path) -> Iterator[Recorded]:
-    """Every recorded attempt under ``data_path``, with its contact and bars."""
+def recorded_trials(data_path: Path, ir_filter: str = "recorded") -> Iterator[Recorded]:
+    """Every recorded attempt under ``data_path``, with its contact and bars; through the IR glitch filter if it ran."""
     for path in find_traces(data_path):
-        calibrations = _calibrations(path)
+        sessions = _sessions(path)
         for attempt in load_trace(path):
-            nominal, pixel, quantum = _bars(attempt, calibrations[attempt.session.session_id])
+            calibration, config = sessions[attempt.session.session_id]
+            nominal, pixel, quantum = _bars(attempt, calibration)
             samples = [Sample(float(t), float(x), float(y)) for t, x, y in zip(attempt.t_s, attempt.x_mm, attempt.y_mm)]
             # The column holds the live FrameDecision.finger_down, i.e. ContactGate's answer, so it is used as is.
             # Gating it again would take a trial that starts lifted, after an earlier trial showed touch, as down.
             down = None if attempt.contact is None else attempt.contact.tolist()
+            glitches = None
+            ir = ir_filter_for(config, ir_filter)
+            if ir is not None:
+                # x_mm / y_mm / contact are the raw report; the renderer worked from them through the filter.
+                samples, down, found = filter_ir(samples, down, ir)
+                glitches = tuple(found)
             label = f"{attempt.session.session_id} {attempt.stem}"
-            yield Recorded(label, attempt, samples, down, nominal, pixel, quantum)
+            yield Recorded(label, attempt, samples, down, nominal, pixel, quantum, glitches)
 
 
-def replay_trace(data_path: Path, params: Params) -> tuple[list[tuple[str, dict[str, Outcome]]], Contact]:
-    """Every recorded attempt under ``data_path`` through the three modes, and the finger's lifts in them."""
+def replay_trace(
+    data_path: Path, params: Params, ir_filter: str = "recorded"
+) -> tuple[list[tuple[str, dict[str, Outcome]]], Contact, list[Recorded]]:
+    """Every recorded attempt under ``data_path`` through the three modes, the finger's lifts in them, and the trials."""
     results = []
     contact = Contact()
-    for trial in recorded_trials(data_path):
+    trials = list(recorded_trials(data_path, ir_filter))
+    for trial in trials:
         trial_params = Params(**{**params.__dict__, "position_quantum_mm": trial.quantum})
         bar_width_mm = trial.attempt.bar_width_mm
         results.append(
             (trial.label, replay(trial.samples, trial.nominal, trial.pixel, bar_width_mm, trial_params, down=trial.down))
         )
         contact += contact_in(trial.samples, trial.down, trial.nominal)
-    return results, contact
+    return results, contact, trials
 
 
 def replay_synthetic(params: Params, *, against_finger: bool) -> list[tuple[str, dict[str, Outcome]]]:
@@ -175,6 +207,19 @@ def format_contact(contact: Contact) -> str:
     return "\n".join(lines)
 
 
+def format_ir_filter(trials: Sequence[Recorded]) -> str:
+    """A line for a recording's title: whether the IR glitch filter ran, and what it ignored."""
+    filtered = [trial for trial in trials if trial.glitches is not None]
+    if not filtered:
+        return "  IR glitch filter: off; positions and contact as reported"
+    kinds = [glitch.kind for trial in filtered for glitch in trial.glitches or ()]
+    counts = ", ".join(f"{kinds.count(kind)} {kind}" for kind in rl.IR_GLITCHES)
+    return (
+        f"  IR glitch filter: on in {len(filtered)} of {len(trials)} trial(s): {counts}. "
+        "Lifts and positions below are the ones the renderer used."
+    )
+
+
 def format_table(title: str, rows: Sequence[dict[str, object]]) -> str:
     lines = [
         title,
@@ -218,12 +263,14 @@ def _block(attempt: Attempt) -> str:
     return "practice" if attempt.is_practice else "catch" if attempt.is_catch else "main"
 
 
-def pulse_sweep(paths: Sequence[Path], settings: Sequence[pulses.Setting], out_dir: Path | None) -> int:
+def pulse_sweep(
+    paths: Sequence[Path], settings: Sequence[pulses.Setting], out_dir: Path | None, ir_filter: str = "recorded"
+) -> int:
     """The top-edge cue over every recorded attempt, for each setting; with and without contact apart."""
     trials = [
         pulses.CueTrial(trial.label, _block(trial.attempt), trial.samples, trial.down, trial.nominal)
         for path in paths
-        for trial in recorded_trials(path)
+        for trial in recorded_trials(path, ir_filter)
     ]
     if not trials:
         print(f"no recorded trials under {', '.join(str(path) for path in paths)}")
@@ -271,6 +318,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--horizon-max-ms", type=float, default=25.0)
     parser.add_argument("--min-speed", type=float, default=5.0)
     parser.add_argument("--latency-ms", type=float, default=0.0)
+    parser.add_argument(
+        "--ir-filter",
+        choices=IR_FILTER_CHOICES,
+        default="recorded",
+        help="Replay through the IR glitch filter as the session ran it (default), or force it on or off.",
+    )
     cue = parser.add_argument_group("top-edge cue", "--pulses sweeps the cue's parameters instead of the render modes")
     cue.add_argument("--pulses", action="store_true", help="Sweep the top-edge cue on the recorded traces.")
     cue.add_argument("--rearm", type=_mm_list, default=pulses.REARM_MM, help="re-arm distances d, mm, comma-separated")
@@ -282,7 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.synthetic or not args.data:
             parser.error("--pulses needs recorded traces")
         settings = pulses.grid(args.rearm, args.corner, args.jump, args.min_interval_ms)
-        return pulse_sweep(args.data, settings, args.out)
+        return pulse_sweep(args.data, settings, args.out, args.ir_filter)
     if not args.synthetic and not args.data:
         parser.error("give a trace file or folder, or --synthetic")
     if len(args.data) > 1:
@@ -295,11 +348,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         reports.append(("synthetic_vs_recording", "Synthetic session, judged as a recording would be (straight lines between its samples)", replay_synthetic(params, against_finger=False)))
         reports.append(("synthetic_vs_finger", "Synthetic session, judged against the finger path that produced it", replay_synthetic(params, against_finger=True)))
     else:
-        results, contact = replay_trace(data, params)
+        results, contact, trials = replay_trace(data, params, args.ir_filter)
         if not results:
             print(f"no recorded trials under {data}")
             return 2
-        title = f"{data.name}: {len(results)} recorded trial(s)\n{format_contact(contact)}"
+        title = f"{data.name}: {len(results)} recorded trial(s)\n{format_ir_filter(trials)}\n{format_contact(contact)}"
         reports.append(("recording", title, results))
     for name, title, results in reports:
         print(format_table(title, summarize(results)))
