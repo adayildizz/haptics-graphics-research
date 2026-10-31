@@ -23,6 +23,7 @@ class ReplaySample:
     in_active_area: bool
     active_side: str | None
     signal_on: bool
+    contact: bool = True  # finger on the glass; traces before schema v3 have no flag
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class ReplayFrameState:
     in_active_area: bool
     active_side: str | None
     signal_on: bool
+    contact: bool = True
 
 
 @dataclass(frozen=True)
@@ -102,7 +104,7 @@ class ReplayAttempt:
         return self.response == taller_side
 
     def state_at(self, t_us: int) -> ReplayFrameState | None:
-        """Interpolate cursor position; retain the previous discrete signal state."""
+        """Interpolate cursor position; retain the previous discrete signal and contact state."""
         if not self.samples:
             return None
         right_index = bisect.bisect_right(self.sample_times_us, t_us)
@@ -125,6 +127,7 @@ class ReplayAttempt:
             in_active_area=left.in_active_area,
             active_side=left.active_side,
             signal_on=left.signal_on,
+            contact=left.contact,
         )
 
 
@@ -165,6 +168,9 @@ def load_trace(path: str | Path) -> ReplaySession:
             if "is_practice" in columns
             else "0 AS is_practice, 0 AS practice_round"
         )
+        # Traces before schema v3 have no contact flag; read them as finger down throughout.
+        sample_columns = {row["name"] for row in connection.execute("PRAGMA table_info(cursor_samples)")}
+        contact_select = "contact" if "contact" in sample_columns else "1 AS contact"
         # started_us is session-elapsed time, so this is true chronological
         # order: practice rounds first, then the main block, retries where
         # they were actually shown.
@@ -183,9 +189,9 @@ def load_trace(path: str | Path) -> ReplaySession:
         attempts: list[ReplayAttempt] = []
         for row in attempt_rows:
             sample_rows = connection.execute(
-                """
+                f"""
                 SELECT sequence, t_us, frame_dt_us, x_px, y_px, x_mm, y_mm,
-                       speed_mm_s, in_active_area, active_side, signal_on
+                       speed_mm_s, in_active_area, active_side, signal_on, {contact_select}
                 FROM cursor_samples
                 WHERE attempt_id = ?
                 ORDER BY sequence
@@ -214,6 +220,7 @@ def load_trace(path: str | Path) -> ReplaySession:
                     in_active_area=bool(sample["in_active_area"]),
                     active_side=sample["active_side"],
                     signal_on=bool(sample["signal_on"]),
+                    contact=bool(sample["contact"]),
                 )
                 for sample in sample_rows
             )
