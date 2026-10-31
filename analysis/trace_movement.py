@@ -6,6 +6,9 @@ drawn to scale in surface millimetres, the finger's full path so far in grey,
 the last second as a coloured trail, and the current fingertip as a marker
 that is green while the electroadhesion signal is on and grey while it is
 off. Time, speed and the side being touched are printed in the corner.
+While the trace's ``contact`` flag says the finger is lifted, the path breaks,
+the marker is hidden and the corner says so; traces recorded before the flag
+existed (schema v3) are drawn as finger down throughout.
 
 It works in the coordinate system the trace stores: millimetres from the
 active surface's top-left corner, y increasing downwards (screen
@@ -135,6 +138,19 @@ def _attempt_stem(session: ReplaySession, attempt: ReplayAttempt) -> str:
     return f"{session.participant_id}_{prefix}trial{attempt.trial_index:02d}_attempt{attempt.attempt_index}"
 
 
+def drawn_path(attempt: ReplayAttempt) -> tuple[np.ndarray, np.ndarray]:
+    """Sample positions in mm, NaN where the finger is lifted so the drawn line breaks there.
+
+    While the finger is off the glass the trace repeats the last touched
+    position, so without the break a lift and a touch somewhere else would show
+    as a stroke between the two points.
+    """
+    down = np.array([s.contact for s in attempt.samples], dtype=bool)
+    xs = np.array([s.x_mm for s in attempt.samples], dtype=float)
+    ys = np.array([s.y_mm for s in attempt.samples], dtype=float)
+    return np.where(down, xs, np.nan), np.where(down, ys, np.nan)
+
+
 def animate_attempt(
     session: ReplaySession,
     attempt: ReplayAttempt,
@@ -168,6 +184,7 @@ def animate_attempt(
 
     xs = np.array([s.x_mm for s in attempt.samples])
     ys = np.array([s.y_mm for s in attempt.samples])
+    path_x, path_y = drawn_path(attempt)
     ts = list(attempt.sample_times_us)
 
     tallest = max(geometry.left_height_mm, geometry.right_height_mm)
@@ -221,14 +238,18 @@ def animate_attempt(
         state = attempt.state_at(t_us)
         upto = bisect.bisect_right(ts, t_us)
         since = bisect.bisect_left(ts, t_us - trail_s * 1_000_000)
-        path_line.set_data(xs[:upto], ys[:upto])
-        trail_line.set_data(xs[since:upto], ys[since:upto])
+        path_line.set_data(path_x[:upto], path_y[:upto])
+        trail_line.set_data(path_x[since:upto], path_y[since:upto])
         if state is not None:
-            marker.set_offsets([[state.x_mm, state.y_mm]])
-            marker.set_facecolor("#48dc78" if state.signal_on else "#7d8590")
+            if state.contact:
+                marker.set_offsets([[state.x_mm, state.y_mm]])
+                marker.set_facecolor("#48dc78" if state.signal_on else "#7d8590")
+            else:
+                marker.set_offsets(np.empty((0, 2)))
             hud.set_text(
                 f"t {t_us / 1e6:5.2f} s   speed {state.speed_mm_s:5.1f} mm/s   "
-                f"side {state.active_side or '-':5s}   signal {'ON ' if state.signal_on else 'off'}"
+                f"side {state.active_side or '-':5s}   signal {'ON ' if state.signal_on else 'off'}   "
+                f"finger {'down' if state.contact else 'LIFTED'}"
             )
         return path_line, trail_line, marker, hud
 

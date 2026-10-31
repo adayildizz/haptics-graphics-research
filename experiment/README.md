@@ -441,6 +441,11 @@ two bars to scale in surface millimetres (reference blue, comparison green,
 taller side named in the title), the full path so far in grey, the last second
 in red, and the fingertip as a marker that is green while the electroadhesion
 signal is on. The HUD shows time, speed and the side being touched.
+While the trace's `contact` flag says the finger is lifted, the path breaks,
+the marker is hidden and the HUD says `finger LIFTED`; without the break, a
+lift and a touch elsewhere would show as a stroke between the two points.
+Traces recorded before the flag existed (schema v3) are drawn as finger down
+throughout. Use `--speed 0.5` to play at half speed.
 
 #### Exploration maps (`analysis/exploration_maps/`)
 
