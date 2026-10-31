@@ -568,9 +568,11 @@ python -m experiment.replay
 
 The left panel lists trace databases and their attempts in chronological order.
 Select an attempt, then use **Play/Pause**, **Restart**, or the clickable timeline.
-The left/right arrow keys seek by one second and Space toggles playback. A
-deterministic `demo_replay_trace.sqlite3` recording is created automatically so
-the browser can be evaluated before real participant traces are available. Pass
+The left/right arrow keys seek by one second and Space toggles playback.
+While the trace's `contact` flag says the finger is lifted, the cursor dot is
+hidden and the bottom line says `Finger lifted`. A deterministic
+`demo_replay_trace.sqlite3` recording is created automatically so the browser
+can be evaluated before real participant traces are available. Pass
 `--no-demo` to hide that recording.
 
 #### Top-edge cue (offline only)
