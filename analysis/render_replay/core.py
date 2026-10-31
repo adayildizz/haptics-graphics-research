@@ -1,4 +1,4 @@
-"""Simulate the render modes on a sampled path and compare their switches with the true edge crossings."""
+"""Simulate the position render rule on a sampled path and compare its switches with the true edge crossings."""
 
 # Uses experiment.render_logic only: the same decision code the trial loop runs, nothing else from the package.
 
@@ -8,23 +8,13 @@ import bisect
 import math
 from collections.abc import Callable, Sequence
 from dataclasses import astuple, dataclass
-from functools import partial
 
 from experiment import render_logic as rl
 from experiment.render_logic import Rect, Sample
 
 MATCH_WINDOW_S = 0.1
-
-
-@dataclass(frozen=True)
-class Params:
-    window: int = 3
-    horizon_factor: float = 1.5
-    horizon_max_ms: float = 25.0
-    min_speed_mm_s: float = 5.0
-    latency_ms: float = 0.0
-    nominal_interval_s: float = 1.0 / 60.0
-    position_quantum_mm: float = 0.2
+# The only render rule in the trial loop; the predictive and timed rules are kept on the render-modes branch.
+MODE = "position"
 
 
 @dataclass(frozen=True)
@@ -112,52 +102,20 @@ def stretches(count: int, down: Sequence[bool] | None) -> list[Stretch]:
     return found
 
 
-def planner_for(
-    mode: str,
-    nominal: Sequence[Rect],
-    pixel: Sequence[Rect] | None,
-    bar_width_mm: float,
-    params: Params,
-    previous: Sample | None = None,
-):
-    """A fresh planner; ``previous`` is the sample just before it starts, i.e. the last one lifted."""
-    if mode == "predictive":
-        return rl.PredictivePlanner(
-            nominal,
-            window=params.window,
-            horizon_factor=params.horizon_factor,
-            horizon_max_s=params.horizon_max_ms / 1000.0,
-            min_speed_mm_s=params.min_speed_mm_s,
-            latency_s=params.latency_ms / 1000.0,
-            nominal_interval_s=params.nominal_interval_s,
-            position_quantum_mm=params.position_quantum_mm,
-        )
-    if mode == "position":
-        return rl.PositionPlanner(nominal)
-    if mode == "timed_legacy":
-        # The legacy rule tests the pixel-rounded rectangles; fall back to nominal when they are unknown.
-        planner = rl.LegacyPlanner(pixel or nominal, bar_width_mm)
-        # Live, its speed always comes from the frame before (speed_mm_s in experiment/trial.py), so at a touchdown
-        # it spans the jump from where the finger lifted.
-        planner._previous = previous
-        return planner
-    raise ValueError(f"unknown render mode {mode!r}")
-
-
 def submitted_plans(
-    new_planner: Callable[[Sample | None], object], samples: Sequence[Sample], down: Sequence[bool] | None = None
+    new_planner: Callable[[], rl.PositionPlanner], samples: Sequence[Sample], down: Sequence[bool] | None = None
 ) -> list[rl.Plan]:
-    """The plan the trial loop submits at each sample: the mode's own, inside the live rule for a lifted finger."""
+    """The plan the trial loop submits at each sample: the rule's own, inside the live rule for a lifted finger."""
     # The rule of TrialRenderer.frame (experiment/trial_render.py), which this tool may not import. A lifted finger
-    # gets the signal off; touching down starts the mode afresh, as the cursor sat still and has now jumped.
-    planner = new_planner(None)
+    # gets the signal off; touching down starts the rule afresh, as the cursor sat still and has now jumped.
+    planner = new_planner()
     submitted: list[rl.Plan] = []
     for index, sample in enumerate(samples):
         if down is not None and not down[index]:
             submitted.append(rl.Plan(sample.t_s, False, None, "lift", (), sample.x_mm, sample.y_mm))
             continue
         if down is not None and index > 0 and not down[index - 1]:
-            planner = new_planner(samples[index - 1])
+            planner = new_planner()
         submitted.append(planner.plan(sample))
     return submitted
 
@@ -347,26 +305,15 @@ def contact_in(samples: Sequence[Sample], down: Sequence[bool] | None, bars: Seq
 def replay(
     samples: Sequence[Sample],
     nominal: Sequence[Rect],
-    pixel: Sequence[Rect] | None,
-    bar_width_mm: float,
-    params: Params,
     truth: Sequence[Sample] | None = None,
     down: Sequence[bool] | None = None,
 ) -> dict[str, Outcome]:
-    """All three modes on one trial; ``truth`` defaults to the samples themselves, joined by straight lines.
+    """The position rule on one trial, keyed by its mode name; ``truth`` defaults to the samples, joined by lines.
 
     ``down`` says per sample whether the finger was on the glass; without it, it never lifts. Contact is only known
     at the samples, so it cannot be combined with a separate truth.
     """
     if down is not None and truth is not None:
         raise ValueError("contact is known per recorded sample: judge against the samples themselves")
-    return {
-        mode: evaluate(
-            mode,
-            simulate(submitted_plans(partial(planner_for, mode, nominal, pixel, bar_width_mm, params), samples, down)),
-            truth or samples,
-            nominal,
-            down,
-        )
-        for mode in rl.RENDER_MODES
-    }
+    switches = simulate(submitted_plans(lambda: rl.PositionPlanner(nominal), samples, down))
+    return {MODE: evaluate(MODE, switches, truth or samples, nominal, down)}

@@ -1,4 +1,4 @@
-"""Pure render decisions: bar geometry, finger velocity, when the signal should switch, and when a cue pulse fires."""
+"""Pure render decisions: bar geometry, when the signal should switch, and when a cue pulse fires."""
 
 # Standard library only, and nothing from this package: analysis tools replay recordings through it.
 
@@ -6,11 +6,9 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-RENDER_MODES = ("predictive", "position", "timed_legacy")
 EDGES = ("left", "right", "top", "bottom")
 
 
@@ -45,7 +43,7 @@ class Transition:
 
 @dataclass(frozen=True)
 class Plan:
-    """Signal state at the sample time, plus timed switches up to the prediction horizon."""
+    """Signal state at the sample time, plus timed switches after it; the position rule plans none."""
 
     t_s: float
     on: bool
@@ -104,41 +102,6 @@ def nominal_bars(
     )
 
 
-def pixel_bars(
-    active_left_px: int,
-    active_top_px: int,
-    active_width_px: int,
-    active_height_px: int,
-    px_per_mm_x: float,
-    px_per_mm_y: float,
-    inter_bar_gap_mm: float,
-    bar_width_mm: float,
-    left_height_mm: float,
-    right_height_mm: float,
-) -> tuple[Rect, Rect]:
-    """The pixel-rounded rectangles the live layout draws, expressed in surface mm."""
-    width_px = max(1, round(bar_width_mm * px_per_mm_x))
-    gap_px = max(1, round(inter_bar_gap_mm * px_per_mm_x))
-    center_x = active_left_px + active_width_px // 2
-    bars = []
-    for name, center_px, height_mm in (
-        ("left", center_x - gap_px // 2 - width_px // 2, left_height_mm),
-        ("right", center_x + gap_px // 2 + width_px // 2, right_height_mm),
-    ):
-        height_px = max(1, round(height_mm * px_per_mm_y))
-        left_px = center_px - width_px // 2
-        bars.append(
-            Rect(
-                name,
-                (left_px - active_left_px) / px_per_mm_x,
-                (left_px + width_px - active_left_px) / px_per_mm_x,
-                (active_height_px - height_px) / px_per_mm_y,
-                active_height_px / px_per_mm_y,
-            )
-        )
-    return bars[0], bars[1]
-
-
 def side_at(bars: Sequence[Rect], x_mm: float, y_mm: float) -> str | None:
     for bar in bars:
         if bar.contains(x_mm, y_mm):
@@ -146,59 +109,10 @@ def side_at(bars: Sequence[Rect], x_mm: float, y_mm: float) -> str | None:
     return None
 
 
-def two_point_speed(previous: Sample, current: Sample) -> float:
-    """Speed from the last two samples, as the trial loop has always computed it."""
-    elapsed = max(current.t_s - previous.t_s, 1e-6)
-    return math.hypot(current.x_mm - previous.x_mm, current.y_mm - previous.y_mm) / elapsed
-
-
-def estimate_velocity(samples: Sequence[Sample]) -> tuple[float, float]:
-    """Least-squares velocity (mm/s) of x and y against time; zero with fewer than two instants."""
-    if len(samples) < 2:
-        return 0.0, 0.0
-    t_mean = sum(s.t_s for s in samples) / len(samples)
-    spread = sum((s.t_s - t_mean) ** 2 for s in samples)
-    if spread <= 0.0:
-        return 0.0, 0.0
-    x_mean = sum(s.x_mm for s in samples) / len(samples)
-    y_mean = sum(s.y_mm for s in samples) / len(samples)
-    vx = sum((s.t_s - t_mean) * (s.x_mm - x_mean) for s in samples) / spread
-    vy = sum((s.t_s - t_mean) * (s.y_mm - y_mean) for s in samples) / spread
-    return vx, vy
-
-
-class VelocityEstimator:
-    """Regression over the last few samples whose position changed; repeats carry no new information."""
-
-    def __init__(self, window: int, stale_s: float) -> None:
-        self.window = max(2, window)
-        self.stale_s = stale_s
-        self._moved: deque[Sample] = deque(maxlen=self.window)
-        self._last: Sample | None = None
-        self._velocity = (0.0, 0.0)
-
-    def add(self, sample: Sample) -> tuple[float, float, bool]:
-        """Returns (vx, vy, repeated): ``repeated`` when the position is the same as the previous sample's."""
-        last, self._last = self._last, sample
-        if last is not None and (sample.x_mm, sample.y_mm) == (last.x_mm, last.y_mm):
-            if sample.t_s - self._moved[-1].t_s > self.stale_s:
-                self._velocity = (0.0, 0.0)
-            return (*self._velocity, True)
-        if self._moved and last is not None and sample.t_s - self._moved[-1].t_s > self.stale_s:
-            # Moving again after a pause: the finger was still at the old position one sample ago.
-            self._moved.clear()
-            self._moved.append(last)
-        self._moved.append(sample)
-        self._velocity = estimate_velocity(self._moved)
-        return (*self._velocity, False)
-
-
 class SampleClock:
-    """Sample intervals: a running median for the horizon, and totals for the per-trial log."""
+    """Sample intervals, totalled for the per-trial log."""
 
-    def __init__(self, nominal_interval_s: float, window: int = 50) -> None:
-        self.nominal_interval_s = nominal_interval_s
-        self._recent: deque[float] = deque(maxlen=window)
+    def __init__(self) -> None:
         self._all: list[float] = []
         self._last_t_s: float | None = None
         self.samples = 0
@@ -206,14 +120,10 @@ class SampleClock:
 
     def add(self, t_s: float, repeated: bool) -> None:
         if self._last_t_s is not None:
-            self._recent.append(t_s - self._last_t_s)
             self._all.append(t_s - self._last_t_s)
         self._last_t_s = t_s
         self.samples += 1
         self.repeated += int(repeated)
-
-    def median_s(self) -> float:
-        return statistics.median(self._recent) if self._recent else self.nominal_interval_s
 
     def summary(self) -> dict[str, float | int]:
         """Interval distribution in ms and the share of samples whose position had not changed."""
@@ -229,10 +139,6 @@ class SampleClock:
             "interval_p95_ms": round(intervals[min(len(intervals) - 1, int(0.95 * len(intervals)))], 3),
             "interval_max_ms": round(intervals[-1], 3),
         }
-
-
-def horizon_s(median_interval_s: float, factor: float, max_s: float) -> float:
-    return min(factor * median_interval_s, max_s)
 
 
 def path_inside(x: float, y: float, vx: float, vy: float, bar: Rect) -> tuple[float, str, float, str] | None:
@@ -322,104 +228,6 @@ class PositionPlanner:
     def plan(self, sample: Sample) -> Plan:
         on = side_at(self.bars, sample.x_mm, sample.y_mm) is not None
         bar, edge = explain_switch(self._previous, sample, self.bars, on)
-        self._previous = sample
-        return Plan(sample.t_s, on, bar, edge, (), sample.x_mm, sample.y_mm)
-
-
-class PredictivePlanner:
-    """Extrapolates the finger along its velocity and times each edge crossing within a short horizon."""
-
-    def __init__(
-        self,
-        bars: Sequence[Rect],
-        *,
-        window: int = 3,
-        horizon_factor: float = 1.5,
-        horizon_max_s: float = 0.025,
-        min_speed_mm_s: float = 5.0,
-        latency_s: float = 0.0,
-        nominal_interval_s: float = 1.0 / 60.0,
-        position_quantum_mm: float = 0.2,
-    ) -> None:
-        self.bars = tuple(bars)
-        self.horizon_factor = horizon_factor
-        self.horizon_max_s = horizon_max_s
-        self.min_speed_mm_s = min_speed_mm_s
-        self.latency_s = latency_s
-        # Without a position change for this long the finger is slower than the speed threshold.
-        stale_s = position_quantum_mm / min_speed_mm_s if min_speed_mm_s > 0 else 0.25
-        self.velocity = VelocityEstimator(window, stale_s)
-        self.clock = SampleClock(nominal_interval_s)
-        self._previous: Sample | None = None
-
-    def plan(self, sample: Sample) -> Plan:
-        vx, vy, repeated = self.velocity.add(sample)
-        self.clock.add(sample.t_s, repeated)
-        horizon = horizon_s(self.clock.median_s(), self.horizon_factor, self.horizon_max_s)
-        if math.hypot(vx, vy) < self.min_speed_mm_s:
-            # Too slow to extrapolate: the sample itself decides.
-            here = sample
-            transitions: list[Transition] = []
-            on = side_at(self.bars, here.x_mm, here.y_mm) is not None
-        else:
-            # The position was measured ``latency_s`` ago, so the finger is already further along.
-            here = Sample(sample.t_s, sample.x_mm + vx * self.latency_s, sample.y_mm + vy * self.latency_s)
-            transitions = []
-            on = False
-            for bar in self.bars:
-                inside = path_inside(here.x_mm, here.y_mm, vx, vy, bar)
-                if inside is None:
-                    continue
-                enter_s, enter_edge, exit_s, exit_edge = inside
-                # On an edge, the direction of travel decides: leaving counts as already out.
-                on = on or enter_s <= 0.0 < exit_s
-                if 0.0 < enter_s <= horizon:
-                    transitions.append(Transition(sample.t_s + enter_s, True, bar.name, enter_edge))
-                if 0.0 < exit_s <= horizon and exit_s > max(enter_s, 0.0):
-                    transitions.append(Transition(sample.t_s + exit_s, False, bar.name, exit_edge))
-            transitions.sort(key=lambda transition: transition.t_s)
-        bar_name, edge = explain_switch(self._previous, here, self.bars, on)
-        self._previous = here
-        return Plan(sample.t_s, on, bar_name, edge, tuple(transitions), sample.x_mm, sample.y_mm, vx, vy, horizon)
-
-
-class LegacyTimer:
-    """The original rule: on while inside a bar, and afterwards until entry + bar width / entry speed."""
-
-    def __init__(self, bar_width_mm: float, min_speed_mm_s: float = 1.0, max_duration_s: float = 2.0) -> None:
-        self.bar_width_mm = bar_width_mm
-        self.min_speed_mm_s = min_speed_mm_s
-        self.max_duration_s = max_duration_s
-        self.start_s = 0.0
-        self.commanded_s = 0.0
-        self._previous_side: str | None = None
-
-    def step(self, now_s: float, active_side: str | None, speed_mm_s: float) -> bool:
-        if active_side is not None and active_side != self._previous_side:
-            speed = max(abs(speed_mm_s), self.min_speed_mm_s)
-            self.start_s = now_s
-            self.commanded_s = min(self.bar_width_mm / speed, self.max_duration_s)
-        self._previous_side = active_side
-        if active_side is not None:
-            return True
-        return self.start_s <= now_s < self.start_s + self.commanded_s
-
-
-class LegacyPlanner:
-    """``LegacyTimer`` driven from samples alone, for replaying a recording offline."""
-
-    def __init__(self, bars: Sequence[Rect], bar_width_mm: float) -> None:
-        self.bars = tuple(bars)
-        self.timer = LegacyTimer(bar_width_mm)
-        self._previous: Sample | None = None
-
-    def plan(self, sample: Sample) -> Plan:
-        previous = self._previous or sample
-        side = side_at(self.bars, sample.x_mm, sample.y_mm)
-        on = self.timer.step(sample.t_s, side, two_point_speed(previous, sample))
-        bar, edge = explain_switch(self._previous, sample, self.bars, on)
-        if on and side is None:
-            edge = "timer"
         self._previous = sample
         return Plan(sample.t_s, on, bar, edge, (), sample.x_mm, sample.y_mm)
 

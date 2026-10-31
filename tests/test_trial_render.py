@@ -66,21 +66,20 @@ def test_only_the_generator_module_can_switch_the_output():
     assert stimulus_source.count("signal_on(self._instrument)") == 1
 
 
-def test_predictive_and_position_modes_use_the_configured_bar_size_not_the_pixel_rectangle():
+def test_the_position_rule_uses_the_configured_bar_size_not_the_pixel_rectangle():
     # 67.05 mm is inside the nominal bar (67-77 mm) but one pixel left of the rectangle that is drawn.
     pos = to_px(67.05, 140.0)
     layout = display.make_trial_layout(None, CALIBRATION, 10.0, 10.0, 12.0, False, 40.0)
     assert not layout.left_bar.collidepoint(pos)
     scenario = dict(path=[(67.05, 140.0)] * 12, end="left")
-    for mode, expected in (("position", 1), ("predictive", 1), ("timed_legacy", 0)):
-        _, attempt, _, _ = run_scripted_trial(config(render_mode=mode), CALIBRATION, SPEC, scenario)
-        assert {int(sample.signal_on) for sample in attempt.samples} == {expected}, mode
-        assert {sample.active_side for sample in attempt.samples} == ({"left"} if expected else {None}), mode
+    _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, scenario)
+    assert {int(sample.signal_on) for sample in attempt.samples} == {1}
+    assert {sample.active_side for sample in attempt.samples} == {"left"}
 
 
 def test_position_mode_writes_one_event_per_switch_with_times_edge_and_position():
     scenario = dict(path=polyline([(0, 55, 140), (40, 90, 140)], 45), end="right")
-    result, attempt, _, commands = run_scripted_trial(config(render_mode="position"), CALIBRATION, SPEC, scenario)
+    result, attempt, _, commands = run_scripted_trial(config(), CALIBRATION, SPEC, scenario)
     writes = [payload for _, kind, payload in attempt.events if kind == "signal_write"]
     assert commands == ["VOLT 4.00", "OUTP ON", "OUTP OFF"]
     assert [(w["kind"], w["on"], w["bar"], w["edge"]) for w in writes] == [
@@ -91,23 +90,21 @@ def test_position_mode_writes_one_event_per_switch_with_times_edge_and_position(
         assert write["mode"] == "position" and write["write_end_us"] >= write["write_start_us"]
         assert {"planned_us", "x_mm", "y_mm", "vx_mm_s", "vy_mm_s"} <= write.keys()
     assert 67.0 <= writes[0]["x_mm"] < 77.0 and writes[1]["x_mm"] >= 77.0
-    # New modes command no duration; the field stays in the pass log as null.
-    assert [entry["commanded_duration_s"] for entry in result.passes] == [None]
+    assert len(result.passes) == 1 and "commanded_duration_s" not in result.passes[0]
     assert json.loads(json.dumps(result.passes))[0]["actual_duration_s"] > 0
 
 
 def test_every_trial_logs_its_sample_intervals_and_repeated_positions():
     path = polyline([(0, 55, 140), (30, 80, 140)], 31) + [(80.0, 140.0)] * 9  # 9 of 40 frames do not move
-    for mode in rl.RENDER_MODES:
-        _, attempt, _, _ = run_scripted_trial(config(render_mode=mode), CALIBRATION, SPEC, dict(path=path, end="left"))
-        (stats,) = [payload for _, kind, payload in attempt.events if kind == "sample_stats"]
-        assert stats["mode"] == mode and stats["samples"] == len(attempt.samples)
-        assert stats["interval_median_ms"] == pytest.approx(1000 / 60, abs=1.0)
-        assert stats["interval_min_ms"] <= stats["interval_median_ms"] <= stats["interval_p95_ms"] <= stats["interval_max_ms"]
-        assert stats["repeated_ratio"] == pytest.approx(stats["repeated"] / stats["samples"], abs=1e-3)
-        assert 8 <= stats["repeated"] <= 11
-        assert attempt.events[-1][1] in ("response",)  # the statistics are in before the attempt is closed
-        assert attempt.finished is not None
+    _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, dict(path=path, end="left"))
+    (stats,) = [payload for _, kind, payload in attempt.events if kind == "sample_stats"]
+    assert stats["mode"] == "position" and stats["samples"] == len(attempt.samples)
+    assert stats["interval_median_ms"] == pytest.approx(1000 / 60, abs=1.0)
+    assert stats["interval_min_ms"] <= stats["interval_median_ms"] <= stats["interval_p95_ms"] <= stats["interval_max_ms"]
+    assert stats["repeated_ratio"] == pytest.approx(stats["repeated"] / stats["samples"], abs=1e-3)
+    assert 8 <= stats["repeated"] <= 11
+    assert attempt.events[-1][1] in ("response",)  # the statistics are in before the attempt is closed
+    assert attempt.finished is not None
 
 
 class LiveTrial:
@@ -189,29 +186,25 @@ def sweep_then_probe(t: float) -> tuple[float, float]:
     return 122.0, 124.0
 
 
-def test_a_predictive_trial_records_timed_writes_and_the_heat_map_script_reads_it(tmp_path):
-    cfg = config(render_mode="predictive")
-    result, device, trace_path = record_live_trial(tmp_path, cfg, LiveTrial(sweep_then_probe, duration_s=1.6))
+def test_a_live_trial_records_its_writes_and_the_heat_map_script_reads_it(tmp_path):
+    result, device, trace_path = record_live_trial(tmp_path, config(), LiveTrial(sweep_then_probe, duration_s=1.6))
 
     assert isinstance(result, trial_module.TrialResult)
     assert device.states and device.states[-1][1] is False
     writes = events_of(trace_path, "signal_write")
-    timed = [w for w in writes if w["kind"] == "transition"]
-    assert sum(w["on"] for w in writes) >= 2  # both bars were switched on
-    assert timed, "no switch was placed between two frames"
-    assert {w["edge"] for w in timed} <= set(rl.EDGES)
-    assert {"left", "right"} & {w["edge"] for w in timed}
-    late_ms = [(w["write_start_us"] - w["planned_us"]) / 1000.0 for w in timed]
+    switched = [w for w in writes if w["kind"] == "plan"]
+    assert sum(w["on"] for w in switched) >= 2  # both bars were switched on
+    assert not [w for w in writes if w["kind"] == "transition"]  # nothing is predicted between two frames
+    assert {w["edge"] for w in switched} <= set(rl.EDGES) and {"left", "right"} & {w["edge"] for w in switched}
+    late_ms = [(w["write_start_us"] - w["planned_us"]) / 1000.0 for w in switched]
     assert min(late_ms) > -0.01 and statistics.median(late_ms) < 2.0
-    assert all(w["mode"] == "predictive" and w["vx_mm_s"] is not None for w in timed)
-    assert all(abs(w["vx_mm_s"]) > 5.0 or abs(w["vy_mm_s"]) > 5.0 for w in timed)
+    assert all(w["mode"] == "position" for w in writes)
 
     (stats,) = events_of(trace_path, "sample_stats")
-    assert stats["mode"] == "predictive" and 4.0 < stats["interval_median_ms"] < 20.0
-    assert 0 < stats["horizon_ms"] <= cfg.predict_horizon_max_ms and stats["busy_wait_margin_ms"] >= 1.0
-    assert [entry["commanded_duration_s"] for entry in result.passes] == [None] * len(result.passes)
+    assert stats["mode"] == "position" and 4.0 < stats["interval_median_ms"] < 20.0
+    assert stats["busy_wait_margin_ms"] >= 1.0
 
-    # The exploration maps read positions only, so a predictive recording must work unchanged.
+    # The exploration maps read positions only, so a live recording works with them unchanged.
     out = tmp_path / "maps"
     assert run_exploration_maps(trace_path, "all", out) == 0
     session_dir = out / "P07" / "P07_live"
@@ -226,7 +219,7 @@ def test_a_predictive_trial_records_timed_writes_and_the_heat_map_script_reads_i
 
 
 def test_a_stalled_main_loop_trips_the_watchdog_and_the_trace_says_so(tmp_path):
-    cfg = config(render_mode="predictive", signal_watchdog_ms=100.0)
+    cfg = config(signal_watchdog_ms=100.0)
     inside = lambda t: (72.0 + 0.5 * t, 140.0)  # noqa: E731 -- resting inside the left bar
     live = LiveTrial(inside, duration_s=0.9, stall_at_s=0.3, stall_s=0.3)
     result, device, trace_path = record_live_trial(tmp_path, cfg, live)
@@ -290,8 +283,7 @@ class SessionScript:
 
 
 def test_a_signal_failure_aborts_the_session_and_everything_before_it_is_on_disk(tmp_path, capsys):
-    # Scripted time cannot drive timed transitions (the scheduler runs on the real clock), hence position mode.
-    cfg = config(render_mode="position", n_practice_trials=0, n_levels=3, trials_per_level=2, catch_trial_pct=0.0, participant_id="P09")
+    cfg = config(n_practice_trials=0, n_levels=3, trials_per_level=2, catch_trial_pct=0.0, participant_id="P09")
     trial_path = tmp_path / "P09_session_trials.csv"
     trace_path = tmp_path / "P09_session_trace.sqlite3"
     recorder = AsyncTraceRecorder(trace_path)
@@ -358,14 +350,14 @@ def test_main_starts_and_closes_the_scheduler_and_names_the_render_mode(monkeypa
 
     assert main_module.run() == 0
 
-    assert "render: predictive" in shown[0]  # the operator's start screen
+    assert "render: position" in shown[0]  # the operator's start screen
     out = capsys.readouterr().out
-    assert "Render mode: predictive (window 3 samples" in out and "watchdog 100 ms" in out
+    assert "Render mode: position (watchdog 100 ms" in out
     assert not any(t.name == "signal-scheduler" and t.is_alive() for t in threading.enumerate())
     (snapshot,) = tmp_path.glob("T1_*_config.json")
-    assert json.loads(snapshot.read_text())["render_mode"] == "predictive"
+    assert json.loads(snapshot.read_text())["render_mode"] == "position"
     (trace,) = tmp_path.glob("T1_*_trace.sqlite3")
     connection = sqlite3.connect(trace)
     (config_json,) = connection.execute("SELECT config_json FROM sessions").fetchone()
     connection.close()
-    assert json.loads(config_json)["latency_compensation_ms"] == 0.0
+    assert json.loads(config_json)["render_mode"] == "position"

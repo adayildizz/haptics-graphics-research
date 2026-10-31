@@ -411,6 +411,7 @@ def run() -> int:
 
     from . import audio_cues, display, masking_noise, stimulus
     from .signal_scheduler import SignalScheduler, exit_cleanly_on_sigterm
+    from .trial_render import MODE as RENDER_MODE
 
     pygame.init()
     # Synthesize the response/timeout cues now: building one costs tens of
@@ -437,7 +438,12 @@ def run() -> int:
     )
 
     resolved_seed = resolve_seed(cfg)
-    write_config_snapshot(cfg, config_snapshot_path, extra={"session_id": session_id, "resolved_rng_seed": resolved_seed})
+    write_config_snapshot(
+        cfg,
+        config_snapshot_path,
+        # render_mode is no longer a setting; it stays in the snapshot so sessions remain comparable with older ones.
+        extra={"session_id": session_id, "resolved_rng_seed": resolved_seed, "render_mode": RENDER_MODE},
+    )
 
     trace_recorder = None
     trace_path = trial_path.parent / f"{session_id}_trace.sqlite3"
@@ -447,6 +453,7 @@ def run() -> int:
         trace_recorder = AsyncTraceRecorder(trace_path)
         trace_config = config_to_dict(cfg)
         trace_config["resolved_rng_seed"] = resolved_seed
+        trace_config["render_mode"] = RENDER_MODE
         trace_recorder.create_session(
             session_id=session_id,
             participant_id=participant,
@@ -462,16 +469,14 @@ def run() -> int:
     signal = SignalScheduler(stimulus.device_for(instrument), watchdog_s=cfg.signal_watchdog_ms / 1000.0).start()
     exit_cleanly_on_sigterm()
     print(
-        f"Render mode: {cfg.render_mode} (window {cfg.predict_window_samples} samples, horizon "
-        f"{cfg.predict_horizon_factor:g} x median interval up to {cfg.predict_horizon_max_ms:g} ms, "
-        f"min speed {cfg.predict_min_speed_mm_s:g} mm/s, latency compensation {cfg.latency_compensation_ms:g} ms, "
-        f"watchdog {cfg.signal_watchdog_ms:g} ms, busy-wait margin {1000.0 * (signal.spin_s or 0.0):.1f} ms)"
+        f"Render mode: {RENDER_MODE} (watchdog {cfg.signal_watchdog_ms:g} ms, "
+        f"busy-wait margin {1000.0 * (signal.spin_s or 0.0):.1f} ms)"
     )
 
     try:
         if not wait_for_continue_or_exit(
             screen,
-            f"Ready to begin ({cfg.mode}, render: {cfg.render_mode}). "
+            f"Ready to begin ({cfg.mode}, render: {RENDER_MODE}). "
             f"Base height {cfg.base_height_mm:g} mm, width {cfg.bar_width_mm:g} mm.",
         ):
             return 0

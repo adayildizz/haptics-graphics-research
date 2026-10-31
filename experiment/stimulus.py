@@ -7,8 +7,6 @@ from typing import Any
 
 from .config import (
     DISABLE_OUTPUT_WHEN_OFF,
-    MAX_SIGNAL_DURATION_S,
-    MIN_SPEED_MM_S,
     MIN_VOLTAGE,
     OFFSET_V,
     VISA_ADDRESS,
@@ -144,12 +142,6 @@ def close_hardware(instrument: Any | None) -> None:
         instrument.close()
     except Exception:
         pass
-
-
-def stimulus_duration(bar_width_mm: float, finger_speed_mm_s: float) -> float:
-    """Compute timed rendering duration from bar width and finger speed."""
-    speed = max(abs(finger_speed_mm_s), MIN_SPEED_MM_S)
-    return min(bar_width_mm / speed, MAX_SIGNAL_DURATION_S)
 
 
 class GeneratorDevice:
