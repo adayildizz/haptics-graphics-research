@@ -52,14 +52,15 @@ finger's velocity says it will cross an edge) and `timed_legacy` (stay on for
 the console and the session's config snapshot still name the rule (`position`),
 so sessions stay comparable with ones recorded under the other rules.
 
-**A lifted finger switches the signal off.** The cursor keeps reporting its last
-position after the finger leaves the glass, so without this a lift inside a bar
-would leave the signal on. On touching down again the rule starts afresh,
-because the cursor has jumped; a switch-on at that moment is logged with edge
-`touch`, a switch-off at a lift with edge `lift`. The rule applies only once the
-input device has reported a touch in the session (see *Contact* under the
-movement trace). A driver that never reports touch keeps the earlier behaviour,
-so the stimulus is never silenced by a device that cannot say a finger is down.
+**The signal follows position only.** Contact (the frame's touch flag, see
+*Contact* under the movement trace) is recorded but not used for the signal.
+The frame sometimes reports a lift, for up to about 2 s, while the finger is
+still on the glass; switching off on a lift turned those into dropouts the
+participant could feel, and a finger that is really lifted cannot feel the
+signal anyway. So a lift inside a bar leaves the signal on, as the cursor keeps
+reporting its last position. On touching down again the rule starts afresh,
+because the cursor has jumped; a switch at that moment is logged with edge
+`touch`.
 
 All four edges of a bar are treated alike (left, right, top, bottom), from any
 direction. The finger is tested against the bars at their **configured
@@ -400,9 +401,9 @@ left mouse button held down. `cursor_samples.contact` records it per sample, and
 `contact_down` / `contact_up` events mark the changes. A device that never
 reports touch would otherwise look like a finger that is never down, so contact
 is only trusted once the device has reported a touch at least once in the
-session. Until then `contact` is written as 1 (unknown), the signal is not
-switched off at a lift, and the program prints a warning at the end of the
-first trial. `sample_stats` says which case applied
+session. Until then `contact` is written as 1 (unknown), and the program prints
+a warning at the end of the first trial. The signal does not use contact either
+way. `sample_stats` says which case applied
 (`device_reports_touch`). Recordings from schemas 1 and 2 have no `contact`
 column and still load; opening one for writing adds the newer columns in place.
 `analysis/exploration_maps` uses the column instead of its lift-off estimate
@@ -530,15 +531,16 @@ the number of visits the rule missed altogether, and the time it had the signal
 on away from any bar. The `mode` column is always `position`; the replay of the
 other rules is on the `render-modes` branch.
 
-**Lifts.** A recording with a `contact` column (schema 3) is replayed with the
-trial loop's own rule for a lifted finger (`TrialRenderer.frame`): the signal
-goes off at the first lifted sample, and the rule starts afresh at the
-touchdown, so nothing is drawn or extrapolated across the jump from the lift
-point. The column already holds the trial loop's decision (contact trusted only
-once the device has reported a touch), so it is used as recorded. The true
-path is split at each lift as well: an end of a visit that a lift or a
-touchdown cut short gets no edge error, and time off the glass never counts as
-signal on away from a bar. Above the table the tool prints the number of lifts,
+**Lifts.** As in the trial loop (`TrialRenderer.frame`), the signal follows
+position only: a lift does not switch it off, and the contact flag is not used
+for the signal. A recording with a `contact` column (schema 3) uses that column
+to judge the switches, not to make them. The column already holds the trial
+loop's decision (contact trusted only once the device has reported a touch), so
+it is used as recorded. The true path is split at each lift: nothing is drawn
+or extrapolated across the jump from the lift point, an end of a visit that a
+lift or a touchdown cut short gets no edge error, and time off the glass is not
+judged. A signal still on at a touchdown counts from the touchdown for the visit
+there. Above the table the tool prints the number of lifts,
 the time lifted, and how many visits began with a touchdown or ended with a lift
 inside a bar. Recordings without the column (schemas 1 and 2) are replayed as if
 the finger never lifted.

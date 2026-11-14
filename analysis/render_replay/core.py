@@ -105,16 +105,13 @@ def stretches(count: int, down: Sequence[bool] | None) -> list[Stretch]:
 def submitted_plans(
     new_planner: Callable[[], rl.PositionPlanner], samples: Sequence[Sample], down: Sequence[bool] | None = None
 ) -> list[rl.Plan]:
-    """The plan the trial loop submits at each sample: the rule's own, inside the live rule for a lifted finger."""
-    # The rule of TrialRenderer.frame (experiment/trial_render.py), which this tool may not import. A lifted finger
-    # gets the signal off; touching down starts the rule afresh, as the cursor sat still and has now jumped.
+    """The plan the trial loop submits at each sample: the rule's own, whether the finger is down or not."""
+    # The rule of TrialRenderer.frame (experiment/trial_render.py), which this tool may not import. The signal
+    # follows position only; touching down starts the rule afresh, as the cursor sat still and has now jumped.
     planner = new_planner()
     submitted: list[rl.Plan] = []
     for index, sample in enumerate(samples):
-        if down is not None and not down[index]:
-            submitted.append(rl.Plan(sample.t_s, False, None, "lift", (), sample.x_mm, sample.y_mm))
-            continue
-        if down is not None and index > 0 and not down[index - 1]:
+        if down is not None and index > 0 and down[index] and not down[index - 1]:
             planner = new_planner()
         submitted.append(planner.plan(sample))
     return submitted

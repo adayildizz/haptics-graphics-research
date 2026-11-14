@@ -210,13 +210,13 @@ def test_a_touchdown_elsewhere_draws_no_path_through_the_bar_in_between():
     assert contact_in(samples, down, BARS).lift_ends == 0
 
 
-def test_the_signal_goes_off_at_the_first_lifted_sample_and_on_again_at_the_touchdown():
+def test_a_lift_inside_a_bar_keeps_the_signal_on_through_the_touchdown():
     # Moving slowly inside the left bar; lifted for frames 10-19, put down again 2 mm further on.
     path = polyline([(0, 70, 140), (10, 72, 140), (19, 72, 140), (20, 74, 140), (30, 75.5, 140)], 31)
     samples, down = recording(path, {10: False, 20: True})
     switches = simulate(submitted_plans(new_planner, samples, down))
-    assert switches == [(samples[0].t_s, True), (samples[10].t_s, False), (samples[20].t_s, True)]
-    assert simulate(submitted_plans(new_planner, samples)) == [(samples[0].t_s, True)]
+    assert switches == [(samples[0].t_s, True)] == simulate(submitted_plans(new_planner, samples))
+    # The signal already on at the touchdown counts for the visit there: nothing missed.
     outcome = replay(samples, BARS, down=down)[MODE]
     assert outcome.errors == [] and outcome.missed == 0 and outcome.spurious_ms == 0
 
@@ -252,8 +252,10 @@ def test_the_replay_takes_lifts_as_the_trial_loop_does():
     down = [s.contact for s in attempt.samples]
     assert not all(down)
     live = [s.signal_on for s in attempt.samples]
+    assert any(on and not finger_down for on, finger_down in zip(live, down))  # on through the lift in the left bar
     assert [plan.on for plan in submitted_plans(lambda: rl.PositionPlanner(nominal), samples, down)] == live
-    assert [plan.on for plan in submitted_plans(lambda: rl.PositionPlanner(nominal), samples)] != live
+    # The signal follows position only, so contact makes no difference to it.
+    assert [plan.on for plan in submitted_plans(lambda: rl.PositionPlanner(nominal), samples)] == live
 
 
 def test_command_line_reports_lifts_and_reads_a_trace_without_contact_as_always_down(tmp_path, capsys):

@@ -141,26 +141,30 @@ def _writes(attempt):
     return [payload for _, kind, payload in attempt.events if kind == "signal_write"]
 
 
-def test_a_lifted_finger_switches_the_signal_off():
-    # During frames 30-49 the cursor sits inside the left bar, but the finger is off the glass.
+def test_a_lift_inside_a_bar_does_not_switch_the_signal_off():
+    # During frames 30-49 the cursor sits inside the left bar with the finger off the glass: the signal follows position.
     _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, LIFT)
     on = [sample.signal_on for sample in attempt.samples]
-    assert all(on[22:30]) and not any(on[30:50])
+    assert all(on[22:50])
+    assert {sample.active_side for sample in attempt.samples[30:50]} == {"left"}
     assert not any(on[50:58])  # touched down again between the bars
     assert any(on[58:])  # and the right bar is felt as usual afterwards
-    lift = [w for w in _writes(attempt) if w["edge"] == "lift"]
-    assert len(lift) == 1 and lift[0]["on"] is False and lift[0]["bar"] == "left"
+    writes = _writes(attempt)
+    assert not [w for w in writes if w["edge"] == "lift"]
+    (touch,) = [w for w in writes if w["edge"] == "touch"]
+    assert touch["on"] is False  # the cursor jumped out of the bar at the touchdown
 
 
 def test_touching_down_inside_a_bar_switches_on_at_once_and_is_labelled():
+    # Lifted outside the bars, put down inside the right one.
     scenario = dict(
-        path=polyline([(0, 72, 141), (9, 72, 141), (10, 122, 140), (30, 123, 140)], 31),
+        path=polyline([(0, 55, 141), (9, 55, 141), (10, 122, 140), (30, 123, 140)], 31),
         touch={0: True, 5: False, 10: True},
         end="left",
     )
     _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, scenario)
     on = [sample.signal_on for sample in attempt.samples]
-    assert all(on[:5]) and not any(on[5:10]) and all(on[10:])
+    assert not any(on[:10]) and all(on[10:])
     touch = [w for w in _writes(attempt) if w["edge"] == "touch"]
     assert len(touch) == 1 and touch[0]["on"] is True and touch[0]["bar"] == "right"
 
@@ -173,9 +177,11 @@ def test_without_touch_reports_a_still_cursor_inside_a_bar_keeps_the_signal_on()
     assert not [w for w in _writes(attempt) if w["edge"] in ("lift", "touch")]
 
 
-def test_once_the_device_has_reported_touch_the_next_trial_trusts_it_from_its_first_frame():
+def test_once_the_device_has_reported_touch_the_next_trial_records_it_from_its_first_frame():
     run_scripted_trial(config(), CALIBRATION, SPEC, LIFT)
     hovering = dict(path=polyline([(0, 60, 141), (40, 90, 141)], 41), end="left")  # button never pressed
     _, attempt, _, _ = run_scripted_trial(config(), CALIBRATION, SPEC, hovering)
-    assert not any(sample.signal_on for sample in attempt.samples)
     assert not any(sample.contact for sample in attempt.samples)
+    # Contact is recorded, not used: the signal still follows the cursor across the left bar.
+    assert any(sample.signal_on for sample in attempt.samples)
+    assert all(sample.signal_on == (sample.active_side is not None) for sample in attempt.samples)
