@@ -487,6 +487,14 @@ column and still load; opening one for writing adds the newer columns in place.
 `analysis/exploration_maps` uses the column instead of its lift-off estimate
 whenever it is present.
 
+**Trial clock (trace schema 4).** Every `t_us` of an attempt (cursor samples and
+events) counts from the moment `run_trial` started, `trial_start`. Schema 4 keeps
+that moment as `attempts.trial_start_s`, on `time.perf_counter()`, so a sample's
+time on that clock is `trial_start_s + t_us / 1e6`. The force sensor's file uses
+the same clock, which is how the two line up (see *Force sensor in a session*).
+Older traces load as before, with `trial_start_s` empty. `trace_metadata` also
+holds session-level facts as key/value rows (the `force_*` keys below).
+
 #### Per-trial animation (`analysis/trace_movement.py`)
 
 ```

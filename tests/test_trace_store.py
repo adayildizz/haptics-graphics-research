@@ -168,3 +168,29 @@ def test_schema_v1_traces_load_as_main_block(tmp_path):
     assert len(session.attempts) == 1
     assert session.attempts[0].is_practice is False
     assert session.attempts[0].practice_round == 0
+
+
+def test_an_older_trace_gets_the_trial_start_column_and_its_old_attempts_leave_it_empty(tmp_path):
+    path = tmp_path / "old_trace.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        """
+        CREATE TABLE attempts (attempt_id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, trial_index INTEGER,
+            attempt_index INTEGER, started_us INTEGER, ended_us INTEGER, level_pct REAL,
+            comparison_height_mm REAL, reference_height_mm REAL, bar_width_mm REAL,
+            reference_side TEXT, is_catch INTEGER, outcome TEXT, response TEXT, response_time_us INTEGER);
+        INSERT INTO attempts VALUES (1, 'P01_session', 3, 1, 0, 5000000, 0.3, 13.0, 10.0, 10.0, 'left', 0,
+            'answered', 'right', 5000000);
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    with TraceStore(path) as store:
+        attempt_id = store.start_attempt(_attempt(attempt_index=2))
+        store.set_trial_start(attempt_id, 1000.25)
+
+    connection = sqlite3.connect(path)
+    starts = connection.execute("SELECT attempt_id, trial_start_s FROM attempts ORDER BY attempt_id").fetchall()
+    connection.close()
+    assert starts == [(1, None), (attempt_id, 1000.25)]
