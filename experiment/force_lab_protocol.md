@@ -119,7 +119,9 @@ belirleyecek.
 
 ---
 
-## 4. Parmak yokken EA sinyali (5 dk)
+## 4. EA sinyali ve sürtünme (10 dk)
+
+### 4a. Parmak yokken EA sinyali
 
 ```
 python -m experiment.force_measure --cal FT05411.cal --seconds 60 --label ea_nofinger
@@ -131,9 +133,23 @@ Canlı değerlere bak: çıkış açılınca Fn ya da Ft değişiyor mu?
 - Değişmiyorsa: sorun yok.
 - Değişiyorsa: sinyal sensöre parazit yapıyor. Not et.
 
-İsteğe bağlı: aynısını parmağını sabit hızla kaydırarak yap
-(`--label ea_slide`). Çıkış açıkken Ft artmalı; EA etkisinin sayılarla ilk
-görünüşü.
+### 4b. Hocanın istediği ölçüm: EA kapalı/açık sürtünme
+
+```
+python -m experiment.force_measure --cal FT05411.cal --seconds 60 --label ea_slide
+```
+
+"Eller uzak" adımlarında elini tamamen çek. Kayıt başlayınca işaret
+parmağını yüzeyde hafif ve eşit bir baskıyla, sabit hızla ileri geri kaydır;
+bu sırada jeneratörün çıkışını **10 s kapalı, 10 s açık**, üç kez. Çıkış
+açıkken Ft artmalı; EA etkisinin sayılarla ilk görünüşü.
+
+Dosya altı gerinim ölçerin gerilimlerini ham olarak saklar (sıfır noktaları
+`_summary.json`'da); teğetsel kuvvetler Fx, Fy, normal kuvvet Fz ve sürtünme
+katsayısı μ = √(Fx² + Fy²) / |Fz| sonradan bu dosyadan hesaplanır (Fz'nin
+işareti montaja bağlı olduğu için mutlak değeri). μ yalnızca parmağın bastığı
+anlar için hesaplanır (|Fz| yaklaşık 0,05 N'luk küçük bir eşiğin üstündeyken),
+çünkü Fz sıfıra yakınken μ anlamsız derecede büyür.
 
 ---
 
