@@ -275,3 +275,17 @@ def test_lateness_only_counts_timed_transitions(rig):
     records = scheduler.stop_trial()
     assert [r.kind for r in records] == ["plan", "transition"]
     assert len(lateness_ms(records)) == 1
+
+
+def test_the_timing_check_can_keep_the_fake_force_reader_running_and_prints_its_summary(capsys):
+    import re
+
+    from experiment import signal_scheduler
+
+    code = signal_scheduler.main(["--seconds", "0.3", "--no-window", "--fake-force"])
+    out = capsys.readouterr().out
+    assert code in (0, 1)  # the timing verdict depends on the machine; this test is about the reader
+    started = out.index("force reader running (the fake source)")
+    summary = re.search(r"force reader: (\d+) samples .* in \d+ reads, no error", out)
+    assert summary and int(summary.group(1)) > 300
+    assert started < out.index("main loop idle") < summary.start() < max(out.find("PASS"), out.find("FAIL"))
