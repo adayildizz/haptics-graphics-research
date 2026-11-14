@@ -11,6 +11,7 @@ curve before running a live participant.
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from dataclasses import asdict
@@ -25,6 +26,7 @@ from .constant_stimuli import TrialSpec, practice_passed, practice_required_corr
 from .input_keys import is_continue_key, is_exit_key
 
 if TYPE_CHECKING:
+    from .force_session import ForceSession
     from .trace_recorder import AsyncTraceRecorder
 
 
@@ -89,6 +91,52 @@ def wait_for_continue_or_exit(screen, message: str) -> bool:
                     return False
                 if is_continue_key(event.key, pygame):
                     return True
+
+
+def hands_off_step(screen, force: ForceSession, block: str) -> bool:
+    """With the force sensor, right before a block: hands off the glass for ``force_zero_s``, counted down.
+
+    The operator starts it with the continue key of the screen before, so the hands are already off. Only the
+    window's start and end are noted (``ForceSession.add_hands_off``); the zero is computed afterwards from the
+    quietest 0.5 s inside it. Returns False if the operator exits instead.
+    """
+    import pygame
+
+    from . import display
+
+    start = time.perf_counter()
+    end = start + force.zero_s
+    shown = None
+    while (now := time.perf_counter()) < end:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and is_exit_key(event.key, pygame)):
+                return False
+        left = math.ceil(end - now)
+        if left != shown:
+            display.draw_break(screen, f"Hands off the screen: {left}", hint="Zeroing the force sensor.")
+            shown = left
+        pygame.time.wait(10)
+    force.add_hands_off(block, start, now)
+    return True
+
+
+def start_force_sensor(screen, force: ForceSession) -> bool:
+    """Starts the force reader while the session is set up; False, after saying why, if it cannot start."""
+    import pygame
+
+    from . import display
+    from .force_session import ForceSensorError
+
+    display.draw_break(screen, "Starting the force sensor ...", hint="")
+    try:
+        force.start()
+    except ForceSensorError as exc:
+        print(f"ERROR: the force sensor could not start, so the session does not start.\n{exc}")
+        reason = str(exc).strip().splitlines()[-1][:110]  # the last line of a traceback says what went wrong
+        display.draw_break(screen, "Force sensor error: the session does not start.", hint=reason)
+        pygame.time.wait(4000)
+        return False
+    return True
 
 
 def _trial_row(
@@ -182,7 +230,13 @@ def run_constant_stimuli(
     trial_path: Path,
     seed: int,
     trace_recorder: AsyncTraceRecorder | None = None,
+    force: ForceSession | None = None,
 ) -> None:
+    """The practice block, then the main block.
+
+    With ``force`` (the force sensor is on) each block begins with a hands-off step, and the reader is checked
+    between trials: if it has stopped, the session goes on without it.
+    """
     from . import trial as trial_module
 
     print(f"constant_stimuli rng_seed={seed}")
@@ -217,6 +271,8 @@ def run_constant_stimuli(
                 f"Practice trials (feedback on). Pass mark {required}/{cfg.n_practice_trials}.",
             ):
                 return
+            if force is not None and not hands_off_step(screen, force, "practice"):
+                return
             if voice_ok and cfg.practice_voice_feedback:
                 voice.speak(PRACTICE_INSTRUCTION, wait=True)
 
@@ -236,6 +292,8 @@ def run_constant_stimuli(
                     scheduled = practice_pending.pop(0)
                     scheduled.attempts += 1
                     shown += 1
+                    if force is not None:
+                        force.check()
                     trace_attempt = None
                     if trace_recorder is not None:
                         trace_attempt = _start_trace_attempt(
@@ -306,6 +364,8 @@ def run_constant_stimuli(
 
     if not wait_for_continue_or_exit(screen, "Main block. No feedback unless configured."):
         return
+    if force is not None and not hands_off_step(screen, force, "main"):
+        return
 
     pending_trials = constant_stimuli.build_schedule(cfg, seed)
     total_trials = len(pending_trials)
@@ -326,6 +386,8 @@ def run_constant_stimuli(
         trial_index = completed_trials + 1
         attempt_index = attempt_counts.get(trial_index, 0) + 1
         attempt_counts[trial_index] = attempt_index
+        if force is not None:
+            force.check()
         trace_attempt = None
         if trace_recorder is not None:
             trace_attempt = _start_trace_attempt(
@@ -464,6 +526,13 @@ def run() -> int:
         )
         print(f"Main-trial trace enabled: {trace_path}")
 
+    force = None
+    if cfg.force_sensor:
+        from .force_session import ForceSession, force_file_path
+
+        assert trace_recorder is not None  # the config refuses the force sensor without the trace
+        force = ForceSession(cfg, trace_recorder, force_file_path(trace_path.parent, session_id))
+
     instrument = stimulus.connect_hardware(cfg)
     # From here until close() below, the scheduler thread is the only thing that switches the output.
     signal = SignalScheduler(stimulus.device_for(instrument), watchdog_s=cfg.signal_watchdog_ms / 1000.0).start()
@@ -474,6 +543,8 @@ def run() -> int:
     )
 
     try:
+        if force is not None and not start_force_sensor(screen, force):
+            return 1
         if not wait_for_continue_or_exit(
             screen,
             f"Ready to begin ({cfg.mode}, render: {RENDER_MODE}). "
@@ -491,6 +562,7 @@ def run() -> int:
             trial_path,
             resolved_seed,
             trace_recorder=trace_recorder,
+            force=force,
         )
 
         if signal.error is not None:
@@ -506,6 +578,8 @@ def run() -> int:
     finally:
         signal.close()
         stimulus.close_hardware(instrument)
+        if force is not None:
+            force.stop()  # only now: the signal is off; its summary goes to the trace before that is closed
         masking_noise.stop()
         pygame.quit()
         if trace_recorder is not None:
