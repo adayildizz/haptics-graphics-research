@@ -32,8 +32,10 @@ masking_noise_volume: 0.30
 
 signal_watchdog_ms: 100.0        # no plan from the main loop for this long -> signal off
 
-cue_enabled: false               # Haptuator pulse at a bar's top edge, sent to the ESP32 over Bluetooth
-cue_device_name: EA-CUE          # the ESP32's Bluetooth name (firmware/esp32_cue)
+cue_enabled: false               # Haptuator pulse at a bar's top edge, sent to the ESP32 (firmware/esp32_cue)
+cue_connection: usb              # usb (the cable) | bluetooth
+cue_port: auto                   # usb: the serial port, e.g. COM5, or auto to find the ESP32
+cue_device_name: EA-CUE          # bluetooth: the ESP32's name
 cue_rearm_mm: 3.0                # a bar that pulsed waits until the finger is this far from its top edge
 cue_corner_mm: 1.0               # the top edge counts this far beyond each side of the bar
 cue_jump_mm: 20.0                # a longer step between two samples is a lift, not a crossing

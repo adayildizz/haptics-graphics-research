@@ -90,9 +90,11 @@ class ExperimentConfig:
     # Rendering (README: Rendering Method)
     signal_watchdog_ms: float = 100.0
 
-    # Haptuator top-edge cue over Bluetooth (README: Top-edge cue; firmware/esp32_cue)
+    # Haptuator top-edge cue, sent to the ESP32 (README: Top-edge cue; firmware/esp32_cue)
     cue_enabled: bool = False
-    cue_device_name: str = "EA-CUE"
+    cue_connection: str = "usb"  # "usb" (the cable) | "bluetooth"
+    cue_port: str = "auto"  # USB: the serial port, e.g. "COM5", or "auto" to find the ESP32
+    cue_device_name: str = "EA-CUE"  # Bluetooth: the ESP32's name
     cue_rearm_mm: float = 3.0
     cue_corner_mm: float = 1.0
     cue_jump_mm: float = 20.0
@@ -141,8 +143,12 @@ class ExperimentConfig:
             raise ValueError("masking_noise_volume must be between 0 and 1")
         if self.signal_watchdog_ms <= 0:
             raise ValueError("signal_watchdog_ms must be > 0")
-        if self.cue_enabled and not self.cue_device_name.strip():
-            raise ValueError("cue_device_name must not be empty when cue_enabled is set")
+        if self.cue_connection not in ("usb", "bluetooth"):
+            raise ValueError("cue_connection must be 'usb' or 'bluetooth'")
+        if self.cue_enabled and self.cue_connection == "usb" and not self.cue_port.strip():
+            raise ValueError("cue_port must not be empty for a USB cue: a port name such as COM5, or 'auto'")
+        if self.cue_enabled and self.cue_connection == "bluetooth" and not self.cue_device_name.strip():
+            raise ValueError("cue_device_name must not be empty for a Bluetooth cue")
         if self.cue_rearm_mm < 0 or self.cue_corner_mm < 0:
             raise ValueError("cue_rearm_mm and cue_corner_mm must be >= 0")
         if self.cue_jump_mm <= 0:

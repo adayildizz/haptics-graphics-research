@@ -34,7 +34,7 @@ DEFAULT_CONFIG_PATH = CONFIGS_DIR / "default.yaml"
 LAST_USED_PATH = CONFIGS_DIR / ".last_used.yaml"
 
 # (attribute, Turkish label, kind)
-# kind in {"float", "int", "optional_int", "bool", "mode", "hand", "seconds", "str"}
+# kind in {"float", "int", "optional_int", "bool", "mode", "hand", "cue_connection", "seconds", "str"}
 FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("Katılımcı", [
         ("participant_id", "Katılımcı ID", "str"),
@@ -87,6 +87,8 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ]),
     ("Haptuatör (üst kenar)", [
         ("cue_enabled", "Üst kenarda haptuatör darbesi", "bool"),
+        ("cue_connection", "ESP32 bağlantısı", "cue_connection"),
+        ("cue_port", "USB portu (auto = kendisi bulur)", "str"),
         ("cue_device_name", "ESP32 Bluetooth adı", "str"),
         ("cue_rearm_mm", "Yeniden kurulma mesafesi (mm)", "float"),
         ("cue_corner_mm", "Köşe toleransı (mm)", "float"),
@@ -98,6 +100,7 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
 # Yalnızca "mode" alanı geri açılırsa kullanılır (bkz. FIELD_GROUPS).
 MODE_CHOICES = ["constant_stimuli"]
 HAND_CHOICES = ["", "left", "right"]
+CUE_CONNECTION_CHOICES = ["usb", "bluetooth"]
 
 # "seconds" alanlarının spinbox sınırları. Panel sınırları; gerçek doğrulama
 # config.py'de (response_timeout_s > 0). Üst sınır, yanlışlıkla girilen bir
@@ -195,9 +198,13 @@ FIELD_HELP: dict[str, str] = {
     "signal_watchdog_ms": "Ana döngüden bu süre boyunca plan gelmezse sinyal kapatılır ve trace'e "
     "signal_watchdog olayı yazılır.",
     "cue_enabled": "Parmak bir çubuğun üst kenarını geçince (aşağı girerken ve yukarı çıkarken) ESP32'ye "
-    "Bluetooth ile mesaj gider ve haptuatör kısa bir darbe verir. Yan kenarlar darbe vermez. Oturum "
-    "başında ESP32'ye bağlanılır; başlangıç ekranı bağlantının kurulup kurulmadığını gösterir.",
-    "cue_device_name": "ESP32'nin Bluetooth'ta göründüğü ad (firmware/esp32_cue: EA-CUE).",
+    "mesaj gider ve haptuatör kısa bir darbe verir. Yan kenarlar darbe vermez. Oturum başında ESP32'ye "
+    "bağlanılır; başlangıç ekranı bağlantının kurulup kurulmadığını gösterir.",
+    "cue_connection": "usb: ESP32 lab PC'ye Type-C veri kablosuyla bağlı (Bluetooth gerekmez). bluetooth: "
+    "kablosuz; PC'de Bluetooth olmalı. ESP32 ikisini de her zaman dinler.",
+    "cue_port": "Yalnızca usb için. auto: ESP32'yi USB portları arasında kendisi bulur. Bulamazsa Aygıt "
+    "Yöneticisi'nde görünen portu yazın (ör. COM5). Deney sırasında Arduino seri monitörü kapalı olmalı.",
+    "cue_device_name": "Yalnızca bluetooth için: ESP32'nin Bluetooth'ta göründüğü ad (firmware/esp32_cue: EA-CUE).",
     "cue_rearm_mm": "Darbe veren çubuk, parmak üst kenarından bu kadar uzaklaşana kadar yeniden darbe vermez. "
     "Kenarda titreyen parmak art arda darbe üretmesin diye.",
     "cue_corner_mm": "Üst kenar, çubuğun iki yanından bu kadar dışarı uzatılmış sayılır; köşeden çapraz geçiş "
@@ -403,6 +410,11 @@ class LauncherApp:
             ttk.Combobox(parent, textvariable=var, values=HAND_CHOICES, state="readonly", width=22).grid(
                 row=row, column=1, sticky="w", pady=(6, 0)
             )
+        elif kind == "cue_connection":
+            var = tk.StringVar()
+            ttk.Combobox(parent, textvariable=var, values=CUE_CONNECTION_CHOICES, state="readonly", width=22).grid(
+                row=row, column=1, sticky="w", pady=(6, 0)
+            )
         elif kind == "seconds":
             var = tk.StringVar()
             # A spinbox so the limit can be nudged without retyping. ttk.Spinbox
@@ -453,7 +465,7 @@ class LauncherApp:
             raw = var.get()
             if kind == "bool":
                 kwargs[attr] = bool(raw)
-            elif kind in ("str", "mode", "hand"):
+            elif kind in ("str", "mode", "hand", "cue_connection"):
                 kwargs[attr] = str(raw).strip()
             elif kind == "optional_int":
                 text = str(raw).strip()

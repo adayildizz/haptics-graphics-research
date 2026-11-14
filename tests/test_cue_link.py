@@ -1,10 +1,12 @@
-"""The Haptuator cue: the Bluetooth link against a fake transport, and the trial loop sending top-edge cues."""
+"""The Haptuator cue: the link against fake transports (USB, Bluetooth), and the trial loop sending top-edge cues."""
 
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 import time
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,7 +19,16 @@ from experiment import trial_render
 from experiment.calibration import make_configured_ir_frame_calibration
 from experiment.config import ExperimentConfig, load_experiment_config
 from experiment.constant_stimuli import TrialSpec
-from experiment.cue_link import CueLink, CueRecord, message_for
+from experiment import cue_link as cue_link_module
+from experiment.cue_link import (
+    BleakTransport,
+    CueLink,
+    CueRecord,
+    SerialTransport,
+    find_esp32_port,
+    message_for,
+    transport_for,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "experiment" / "configs" / "default.yaml"
@@ -79,6 +90,58 @@ class FakeLink:
     def drain(self) -> list[CueRecord]:
         records, self._records = self._records, []
         return records
+
+
+class FakeSerial:
+    """Stands in for pyserial's Serial: keeps its settings at open, what is written, and input-buffer resets."""
+
+    def __init__(self, opened: list) -> None:
+        self._opened = opened
+        self.port = None
+        self.baudrate = None
+        self.timeout = None
+        self.write_timeout = None
+        self.dtr = True  # pyserial's defaults
+        self.rts = True
+        self.is_open = False
+        self.lines_at_open: tuple[bool, bool] | None = None
+        self.written: list[bytes] = []
+        self.input_resets = 0
+
+    def open(self) -> None:
+        self.lines_at_open = (self.dtr, self.rts)
+        self.is_open = True
+        self._opened.append(self)
+
+    def write(self, data: bytes) -> int:
+        self.written.append(data)
+        return len(data)
+
+    def reset_input_buffer(self) -> None:
+        self.input_resets += 1
+
+    def close(self) -> None:
+        self.is_open = False
+
+
+def fake_pyserial(monkeypatch, ports) -> list[FakeSerial]:
+    """Install a fake ``serial`` package listing ``ports``; returns the ports it opens, in order."""
+    opened: list[FakeSerial] = []
+    serial_module = types.ModuleType("serial")
+    tools_module = types.ModuleType("serial.tools")
+    list_ports_module = types.ModuleType("serial.tools.list_ports")
+    serial_module.Serial = lambda: FakeSerial(opened)
+    list_ports_module.comports = lambda: ports
+    tools_module.list_ports = list_ports_module
+    serial_module.tools = tools_module
+    monkeypatch.setitem(sys.modules, "serial", serial_module)
+    monkeypatch.setitem(sys.modules, "serial.tools", tools_module)
+    monkeypatch.setitem(sys.modules, "serial.tools.list_ports", list_ports_module)
+    return opened
+
+
+def port(device: str, vid: int | None):
+    return types.SimpleNamespace(device=device, vid=vid)
 
 
 def wait_until(condition, timeout_s: float = 2.0) -> None:
@@ -173,6 +236,51 @@ def test_close_stops_the_thread_and_disconnects():
     assert link.drain()[0].error == "not connected"
 
 
+def test_auto_finds_the_esp32_among_the_serial_ports():
+    ports = [port("COM3", 0x8087), port("COM7", 0x303A), port("COM9", None)]  # e.g. a Bluetooth modem, the ESP32
+    assert find_esp32_port(ports) == "COM7"
+    with pytest.raises(ConnectionError, match="no ESP32 found on USB"):
+        find_esp32_port([port("COM3", 0x8087)])
+
+
+def test_the_settings_choose_usb_or_bluetooth():
+    usb = transport_for("usb", "COM5", "EA-CUE")
+    assert isinstance(usb, SerialTransport) and usb.port == "COM5"
+    bluetooth = transport_for("bluetooth", "auto", "EA-CUE")
+    assert isinstance(bluetooth, BleakTransport) and bluetooth.device_name == "EA-CUE"
+    with pytest.raises(ValueError, match="unknown cue connection"):
+        transport_for("wifi")
+
+
+def test_over_usb_a_message_goes_out_as_one_text_line_without_resetting_the_esp32(monkeypatch, make_link):
+    opened = fake_pyserial(monkeypatch, [port("COM3", 0x8087), port("COM7", 0x303A)])
+    link = make_link(SerialTransport("auto"))
+    assert link.wait_connected(2.0)
+    link.send("ENTER_RIGHT", time.perf_counter())
+    assert link.flush(2.0)
+    assert [record.error for record in link.drain()] == [None]
+    (serial_port,) = opened
+    assert serial_port.port == "COM7"
+    assert serial_port.lines_at_open == (False, False)  # DTR and RTS low from the start: no reset
+    assert serial_port.written == [b"ENTER_RIGHT\n"]
+    assert serial_port.input_resets == 1  # the ESP32's log line is discarded, never left to pile up
+
+
+def test_over_usb_a_named_port_is_used_as_given(monkeypatch, make_link):
+    opened = fake_pyserial(monkeypatch, [])  # nothing listed: a named port is not looked up
+    link = make_link(SerialTransport("COM5"))
+    assert link.wait_connected(2.0)
+    assert opened[0].port == "COM5"
+
+
+def test_without_the_esp32_on_usb_the_link_says_why_and_keeps_trying(monkeypatch, make_link):
+    fake_pyserial(monkeypatch, [port("COM3", 0x8087)])
+    link = make_link(SerialTransport("auto"))
+    wait_until(lambda: link.last_error is not None)
+    assert "no ESP32 found on USB" in link.last_error
+    assert not link.connected
+
+
 def test_a_top_edge_crossing_down_and_up_sends_enter_and_exit(monkeypatch):
     link = FakeLink()
     monkeypatch.setattr(trial_render, "CUE_LINK", link)
@@ -209,15 +317,22 @@ def test_with_the_cue_off_nothing_is_sent_even_across_the_top_edge(monkeypatch):
 
 
 def test_the_cue_settings_are_checked():
-    assert config().cue_enabled is False  # the default config leaves the cue off
+    default = config()
+    assert default.cue_enabled is False  # the default config leaves the cue off
+    assert (default.cue_connection, default.cue_port) == ("usb", "auto")
     with pytest.raises(ValueError, match="cue_min_interval_ms"):
         config(cue_min_interval_ms=0.0)
+    with pytest.raises(ValueError, match="cue_connection"):
+        config(cue_connection="wifi")
+    with pytest.raises(ValueError, match="cue_port"):
+        config(cue_enabled=True, cue_connection="usb", cue_port=" ")
     with pytest.raises(ValueError, match="cue_device_name"):
-        config(cue_enabled=True, cue_device_name=" ")
+        config(cue_enabled=True, cue_connection="bluetooth", cue_device_name=" ")
+    config(cue_enabled=True, cue_connection="usb", cue_device_name="")  # the Bluetooth name is not needed for USB
 
 
-def test_main_opens_the_cue_link_names_it_on_the_start_screen_and_closes_it(monkeypatch, tmp_path):
-    from experiment import cue_link, signal_scheduler, stimulus
+def test_main_opens_the_cue_link_names_it_on_the_start_screen_and_closes_it(monkeypatch, tmp_path, capsys):
+    from experiment import signal_scheduler, stimulus
 
     cue_config = tmp_path / "cue.yaml"
     cue_config.write_text(CONFIG_PATH.read_text().replace("cue_enabled: false", "cue_enabled: true"))
@@ -227,12 +342,15 @@ def test_main_opens_the_cue_link_names_it_on_the_start_screen_and_closes_it(monk
     monkeypatch.setattr(data_logger, "ensure_data_dir", lambda: tmp_path)
     monkeypatch.setattr(signal_scheduler, "exit_cleanly_on_sigterm", lambda: None)
     transport = FakeTransport()
-    monkeypatch.setattr(cue_link, "BleakTransport", lambda _name: transport)
+    asked: list[tuple] = []
+    monkeypatch.setattr(cue_link_module, "transport_for", lambda *args: asked.append(args) or transport)
     shown: list[str] = []
     monkeypatch.setattr(main_module, "wait_for_continue_or_exit", lambda _screen, message: shown.append(message) or False)
 
     assert main_module.run() == 0
 
+    assert asked == [("usb", "auto", "EA-CUE")]  # the default settings: the USB cable, port found automatically
+    assert "connected over USB (auto)" in capsys.readouterr().out
     assert "Cue: connected." in shown[0]
     assert transport.connects == 1 and transport.disconnected
     assert not any(t.name == "cue-link" and t.is_alive() for t in threading.enumerate())

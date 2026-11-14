@@ -120,24 +120,30 @@ recording a contact flag and sampling per report are worth adding.
 ### Before the first real session: Haptuator cue check
 
 Only for sessions with `cue_enabled` (see *Top-edge cue (Haptuator)* below).
-Once per computer, in the experiment's Python:
+Once per computer, in the experiment's Python: `pyserial` for the USB cable
+(the default), `bleak` for Bluetooth.
 
 ```
-pip install bleak
+python -m pip install pyserial bleak
 ```
 
-Put the program on the ESP32 first (`firmware/esp32_cue/README.md`), then:
+Put the program on the ESP32 first (`firmware/esp32_cue/README.md`), plug it in
+with the Type-C data cable, close any serial monitor, then:
 
 ```
 python -m experiment.cue_link
 ```
 
-It finds `EA-CUE` over Bluetooth and sends ten messages, half a second apart.
-The Haptuator should pulse once for each. It reports how many were written and
-how long the PC took to hand each one to Bluetooth. That is the PC side only:
-the delay to the pulse itself is measured with the oscilloscope, on the ESP32's
-GPIO 4 or the Haptuator signal against the EA signal. `--count`,
-`--interval-ms` and `--device` change the defaults.
+It finds the ESP32 on USB and sends ten messages, half a second apart. The
+Haptuator should pulse once for each. It reports how many were written and how
+long the PC took to hand each one over. That is the PC side only: the delay to
+the pulse itself is measured with the oscilloscope, on the ESP32's GPIO 4 or the
+Haptuator signal against the EA signal.
+
+- `--port COM5` names the port, if it is not found by itself.
+- `--bluetooth` sends over Bluetooth instead, to `EA-CUE` (`--device` for
+  another name).
+- `--count` and `--interval-ms` change the defaults.
 
 ### Safety
 
@@ -284,7 +290,7 @@ experiment/
 ├── stimulus.py          # Generator connection and the VISA write helpers
 ├── render_logic.py      # Pure render decisions: bars, the position rule, top-edge cue (no pygame, no VISA)
 ├── signal_scheduler.py  # The one thread that switches the output; watchdog; timing benchmark
-├── cue_link.py          # Bluetooth link to the ESP32 that plays the top-edge cue on the Haptuator; lab check
+├── cue_link.py          # USB / Bluetooth link to the ESP32 that plays the top-edge cue; lab check
 ├── trial_render.py      # Per-trial glue: sample -> plan -> scheduler -> trace events
 ├── input_probe.py       # Rig check: position reports per second, and whether contact is reported
 ├── trial.py             # Single trial logic, per-pass logging
@@ -303,7 +309,7 @@ analysis/
 └── render_replay/       # Replays a recording through the position rule; edge errors in mm; top-edge cue sweep
 
 firmware/
-└── esp32_cue/           # ESP32-C3 sketch: receives the top-edge cue over Bluetooth, plays it on the Haptuator
+└── esp32_cue/           # ESP32-C3 sketch: receives the top-edge cue over USB or Bluetooth, plays it on the Haptuator
 
 tests/                   # pytest: level generation, scheduling, psychometric-fit recovery
 ```
@@ -609,9 +615,9 @@ A short vibration pulse on the Haptuator Mark II when the finger crosses a
 bar's top edge, entering or leaving. The decision is `TopEdgeCue` in
 `render_logic.py`. With `cue_enabled` set, every trial runs it and sends each
 pulse as a text message (`ENTER_LEFT`, `EXIT_LEFT`, `ENTER_RIGHT`,
-`EXIT_RIGHT`) over Bluetooth LE to an ESP32-C3. The ESP32 plays the pattern on
-the Haptuator through a MAX98357A amplifier (`cue_link.py`,
-`firmware/esp32_cue/`). The pattern is set on the ESP32 and is still a
+`EXIT_RIGHT`) to an ESP32-C3, over the USB cable or over Bluetooth LE. The
+ESP32 plays the pattern on the Haptuator through a MAX98357A amplifier
+(`cue_link.py`, `firmware/esp32_cue/`). The pattern is set on the ESP32 and is still a
 placeholder. The rules:
 
 - **Detected, not predicted.** The crossing is found on the straight step
@@ -645,7 +651,12 @@ which is a placeholder until the pulse pattern is chosen.
 **In a session.** The settings are:
 
 - `cue_enabled`: off by default;
-- `cue_device_name`: `EA-CUE`;
+- `cue_connection`: `usb` (the default; the Type-C data cable, no Bluetooth
+  needed) or `bluetooth`;
+- `cue_port`: for USB, `auto` (the ESP32 is found by its USB vendor ID) or a
+  port name such as `COM5`. No other program, such as a serial monitor, may
+  have the port open;
+- `cue_device_name`: for Bluetooth, `EA-CUE`;
 - `cue_rearm_mm`, `cue_corner_mm`, `cue_jump_mm` and `cue_min_interval_ms`:
   `d`, `c`, `J` and `min_interval`.
 

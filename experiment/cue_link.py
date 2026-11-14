@@ -1,7 +1,8 @@
-"""Bluetooth LE link to the ESP32 that plays the top-edge cue on the Haptuator (firmware/esp32_cue)."""
+"""Link to the ESP32 that plays the top-edge cue on the Haptuator (firmware/esp32_cue): USB cable or Bluetooth LE."""
 
 # One thread owns the link and runs its own asyncio loop, as bleak needs one. The trial loop only hands messages
-# over and never waits for Bluetooth. bleak is imported only when a session actually connects.
+# over and never waits for the link. pyserial (USB) and bleak (Bluetooth) are imported only when a session actually
+# connects that way, so neither is needed for sessions without the cue.
 
 from __future__ import annotations
 
@@ -14,8 +15,12 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+CONNECTIONS = ("usb", "bluetooth")
 DEVICE_NAME = "EA-CUE"
 CUE_UUID = "03c34c2a-b29f-4040-b812-5778ed2507cd"  # the ESP32's CUE characteristic; see firmware/esp32_cue/README.md
+ESPRESSIF_USB_VID = 0x303A  # the ESP32-C3's own USB port reports this vendor ID
+USB_BAUD = 115200  # ignored by the ESP32-C3's own USB port, which runs at USB speed
+USB_WRITE_TIMEOUT_S = 0.05
 SCAN_TIMEOUT_S = 10.0
 RETRY_S = 2.0
 MAX_AGE_S = 0.1  # a message still unsent after this long is dropped: its pulse would be felt in the wrong place
@@ -81,8 +86,67 @@ class BleakTransport:
             await self._client.disconnect()
 
 
+def find_esp32_port(ports) -> str:
+    """The serial port of the first ESP32 among ``ports`` (pyserial's port list), found by its USB vendor ID."""
+    found = [port.device for port in ports if getattr(port, "vid", None) == ESPRESSIF_USB_VID]
+    if not found:
+        raise ConnectionError("no ESP32 found on USB (is the cable a data cable, and the board plugged in?)")
+    return found[0]
+
+
+class SerialTransport:
+    """The ESP32 over the USB cable, as a serial port: ``port`` is a name such as COM5, or "auto" to find it."""
+
+    def __init__(self, port: str = "auto") -> None:
+        self.port = port
+        self._serial = None
+
+    @property
+    def is_connected(self) -> bool:
+        return self._serial is not None and self._serial.is_open
+
+    async def connect(self) -> None:
+        import serial
+        from serial.tools import list_ports
+
+        name = find_esp32_port(list_ports.comports()) if self.port == "auto" else self.port
+        port = serial.Serial()
+        port.port = name
+        port.baudrate = USB_BAUD
+        port.timeout = 0
+        port.write_timeout = USB_WRITE_TIMEOUT_S
+        # Both control lines stay low from the start: on the ESP32-C3's own USB port, toggling them resets the chip.
+        port.dtr = False
+        port.rts = False
+        port.open()
+        self._serial = port
+
+    async def write(self, data: bytes) -> None:
+        self._serial.write(data)
+        # The ESP32 answers with a log line per message; nothing here needs it, so it is discarded.
+        self._serial.reset_input_buffer()
+
+    async def disconnect(self) -> None:
+        if self._serial is not None:
+            self._serial.close()
+
+
+def transport_for(connection: str, port: str = "auto", device_name: str = DEVICE_NAME) -> Transport:
+    """The link the settings ask for: "usb" (``port``) or "bluetooth" (``device_name``)."""
+    if connection == "usb":
+        return SerialTransport(port)
+    if connection == "bluetooth":
+        return BleakTransport(device_name)
+    raise ValueError(f"unknown cue connection {connection!r}; expected one of {CONNECTIONS}")
+
+
+def describe(connection: str, port: str = "auto", device_name: str = DEVICE_NAME) -> str:
+    """Where the link goes, for the console: "USB (auto)" or "Bluetooth (EA-CUE)"."""
+    return f"USB ({port})" if connection == "usb" else f"Bluetooth ({device_name})"
+
+
 class CueLink:
-    """Sends cue messages from its own thread, so the trial loop never waits for Bluetooth.
+    """Sends cue messages from its own thread, so the trial loop never waits for the link.
 
     Connects in the background and connects again after a drop. A message handed over while the link is down is
     not kept for later, and neither is one that could not be written within ``max_age_s``: a late pulse would be
@@ -240,17 +304,24 @@ class CueLink:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m experiment.cue_link",
-        description="Send test cues to the ESP32 over Bluetooth. The Haptuator should pulse once per message.",
+        description="Send test cues to the ESP32. The Haptuator should pulse once per message.",
     )
-    parser.add_argument("--device", default=DEVICE_NAME, help="the ESP32's Bluetooth name")
+    link_choice = parser.add_mutually_exclusive_group()
+    link_choice.add_argument("--usb", dest="connection", action="store_const", const="usb", help="over the USB cable")
+    link_choice.add_argument(
+        "--bluetooth", dest="connection", action="store_const", const="bluetooth", help="over Bluetooth LE"
+    )
+    parser.set_defaults(connection="usb")
+    parser.add_argument("--port", default="auto", help="USB: the serial port, e.g. COM5 (default: find it)")
+    parser.add_argument("--device", default=DEVICE_NAME, help="Bluetooth: the ESP32's name")
     parser.add_argument("--count", type=int, default=10, help="messages to send")
     parser.add_argument("--interval-ms", type=float, default=500.0, help="time between messages")
     parser.add_argument("--connect-timeout-s", type=float, default=20.0)
     args = parser.parse_args(argv)
 
-    link = CueLink(BleakTransport(args.device)).start()
+    link = CueLink(transport_for(args.connection, args.port, args.device)).start()
     try:
-        print(f"Looking for {args.device} ...")
+        print(f"Looking for the ESP32 over {describe(args.connection, args.port, args.device)} ...")
         if not link.wait_connected(args.connect_timeout_s):
             print(f"FAIL: not connected ({link.last_error or 'timed out'})")
             return 1

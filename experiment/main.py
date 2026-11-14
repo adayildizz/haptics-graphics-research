@@ -477,16 +477,17 @@ def run() -> int:
     cue_link = None
     cue_status = ""
     if cfg.cue_enabled:
-        from .cue_link import BleakTransport, CueLink
+        from .cue_link import CueLink, describe, transport_for
 
-        print(f"Haptuator cue: connecting to {cfg.cue_device_name} over Bluetooth ...")
-        cue_link = CueLink(BleakTransport(cfg.cue_device_name)).start()
+        where = describe(cfg.cue_connection, cfg.cue_port, cfg.cue_device_name)
+        print(f"Haptuator cue: connecting to the ESP32 over {where} ...")
+        cue_link = CueLink(transport_for(cfg.cue_connection, cfg.cue_port, cfg.cue_device_name)).start()
         trial_render.use_cue_link(cue_link)
         # The link keeps trying in the background; a session that starts without it runs on with EA only.
         # The start screen is one line, so its note is short; the console says more.
         if cue_link.wait_connected(CUE_CONNECT_WAIT_S):
             cue_status = " Cue: connected."
-            print(f"Haptuator cue: connected to {cfg.cue_device_name}.")
+            print(f"Haptuator cue: connected over {where}.")
         else:
             cue_status = " Cue: NOT connected!"
             print(f"WARNING: Haptuator cue not connected ({cue_link.last_error or 'timed out'}); still trying.")
