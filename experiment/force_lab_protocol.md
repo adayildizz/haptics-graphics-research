@@ -4,9 +4,10 @@ Amaç: Nano17'nin newton cinsinden doğru ölçtüğünü, yükün tamamının s
 geçtiğini, sıfır noktasının ne kadar kaydığını ve EA sinyalinin sensörü bozup
 bozmadığını görmek. Süre: yaklaşık 45 dakika.
 
-> **Önemli:** NI kartını aynı anda yalnızca **bir** program okuyabilir. Bizim
-> komutlarımızı çalıştırmadan önce ATI programını kapat; yoksa "resource is
-> reserved" gibi bir hata alırsın.
+> **Önemli:** Her şey komut satırından, bizim komutla yapılır; başka bir
+> programa gerek yok. NI kartını aynı anda yalnızca **bir** program okuyabilir:
+> NI MAX'te açık bir Test Panel varsa bizim komutu çalıştırmadan önce kapat,
+> yoksa "resource is reserved" gibi bir hata alırsın.
 
 ---
 
@@ -36,28 +37,46 @@ bozmadığını görmek. Süre: yaklaşık 45 dakika.
    ```
    python -m experiment.force_measure --fake --seconds 5 --zero-s 1 --label fake
    ```
-5. `.cal` dosyasını bul (ATI programının ayarlarında hangi dosyayı yüklediği
-   yazar). Bir kopyasını **repo klasörüne** koy (aşağıdaki komutlar
+5. `.cal` dosyasının bir kopyasını **repo klasörüne** koy (aşağıdaki komutlar
    `FT05411.cal` adını varsayıyor; adı farklıysa komutlarda değiştir). Bir
    kopyasını da Mac'e getir.
 6. Plakanın nasıl durduğunun fotoğrafını çek: sensörden başka destek var mı?
 
 ---
 
-## 1. ATI programıyla ağırlık testi (15 dk)
+## 1. Kalibrasyon dosyası okunuyor mu? (1 dk)
 
-Bizim kodumuzdan bağımsız olarak sensörü ve montajı kontrol eder.
+```
+python -c "from experiment.ati_calibration import load_ati_calibration as load; c = load('FT05411.cal'); print(c.serial, c.part_number, c.force_units, c.torque_units, c.gauges)"
+```
 
-1. Camın üstünde hiçbir şey yokken, ellerin ve kolların plakaya ve çerçeveye
-   değmezken **Bias**'a bas. Altı eksen de 0'a yakın olmalı. Ağırlıkların
-   altına kâğıt/bez koyacaksan onu Bias'tan **önce** yerleştir.
-2. Bir ağırlığı **ortaya** yavaşça koy, 2–3 s bekle, **Fz**'yi oku. Kaldır,
-   0'a döndüğünü kontrol et.
-3. Aynı ağırlığı sırayla **dört köşeye** ve **iki çubuğun yerine** koy.
-4. 2–3 farklı ağırlıkla tekrarla. 200 g'dan ağırına gerek yok (parmak
+`FT05411 SI-12-0.12 N N-mm 6` gibi bir satır yazmalı. Hata verirse ya da
+birimler N değilse, çıktıyı olduğu gibi kaydet ve devam etme.
+
+---
+
+## 2. Ağırlık testi (15 dk)
+
+Bilinen ağırlıkla sensörün doğru newton gösterdiğini ve yükün tamamının
+sensörden geçtiğini kontrol eder. Ağırlık gerçek değeri bildiğimiz bir yük
+olduğu için en güvenilir kontrol budur.
+
+1. Ağırlıkların altına kâğıt/bez koyacaksan **şimdi** koy. Sonra:
+   ```
+   python -m experiment.force_measure --cal FT05411.cal --seconds 180 --label weights
+   ```
+2. "Hands OFF" geri sayımında elini ve kolunu plakadan ve çerçeveden çek.
+3. Kayıt başlayınca saniyede 4 satır yazar. Her konum için:
+   - Ağırlığı koymadan önce satırdaki **Fz**'yi oku (0'a yakın olmalı).
+   - Ağırlığı yavaşça koy, elini çek, 3–4 s bekle, **Fz**'yi yeniden oku.
+   - Ağırlığı kaldır; Fz eski değerine dönmeli.
+   - Ağırlığın kuvveti = (ağırlıkla Fz) − (ağırlıksız Fz).
+4. Sıra: **orta**, **dört köşe**, **iki çubuğun yeri**. 180 s yetmezse
+   komutu farklı bir etiketle yeniden çalıştır (`--label weights2`).
+5. 2–3 farklı ağırlıkla tekrarla. 200 g'dan ağırına gerek yok (parmak
    kuvvetleri 0,1–1 N arası).
 
-Beklenen Fz = kütle × 9,81:
+Beklenen kuvvet = kütle × 9,81:
 
 | Ağırlık | Beklenen Fz |
 |---|---|
@@ -74,13 +93,12 @@ Neye bakıyoruz:
 - **Beklenen değere yakın mı?** Uzaksa eski kalibrasyon ya da montaj sorunlu
   olabilir.
 - **Fz'nin işareti:** ağırlık koyunca eksi mi, artı mı? Not et.
-- **Fx, Fy** 0'a yakın kalmalı.
-- **Tx, Ty** ağırlık köşeye gittikçe büyür: normal (tork = kuvvet × merkezden
-  uzaklık).
+- **Fx, Fy** ağırlık koyunca belirgin şekilde değişmemeli (düz duran
+  ağırlık yana itmez).
 
 Doldurulacak tablo:
 
-| Ağırlık | Konum | Fz (okunan) | Fx | Fy | Kaldırınca 0'a döndü mü? |
+| Ağırlık | Konum | Fz ağırlıksız | Fz ağırlıkla | Fark | Fx, Fy değişti mi? |
 |---|---|---|---|---|---|
 | | orta | | | | |
 | | sol üst köşe | | | | |
@@ -89,21 +107,6 @@ Doldurulacak tablo:
 | | sağ alt köşe | | | | |
 | | sol çubuk | | | | |
 | | sağ çubuk | | | | |
-
----
-
-## 2. Aynı ağırlıklar bizim komutla (5 dk)
-
-ATI programını **kapat**, sonra:
-
-```
-python -m experiment.force_measure --cal FT05411.cal --seconds 60 --label weights
-```
-
-Önce "eller uzak" der, sonra 60 s canlı yazar. Bu sürede iki ağırlığı ortaya
-ve bir köşeye koyup kaldır. Satırın sonundaki parantezde yazan **Fz**
-(işaretiyle) ATI programının **Fz**'siyle aynı çıkmalı; **Fn** onun yalnızca
-mutlak değeri. Aynıysa kalibrasyonu doğru uyguluyoruz.
 
 ---
 
