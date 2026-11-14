@@ -89,6 +89,8 @@ class Forces:
 
 def read_trace(path: Path) -> tuple[dict[str, str], IrRecording]:
     """The trace's metadata and its cursor samples and contact events, timed on ``time.perf_counter``."""
+    if not path.is_file():  # sqlite3 would quietly create an empty file
+        raise FileNotFoundError(f"no trace at {path}")
     connection = sqlite3.connect(path)
     try:
         metadata = dict(connection.execute("SELECT key, value FROM trace_metadata"))
@@ -271,6 +273,8 @@ def report(trace_path: Path, out_dir: Path | None = None) -> dict:
     if "force_file" not in metadata:
         raise ValueError(f"{trace_path.name} was recorded without the force sensor (no force_file in its metadata)")
     force_path = trace_path.parent / metadata["force_file"]
+    if not force_path.is_file():
+        raise FileNotFoundError(f"the trace names the force file {force_path.name}, but it is not next to the trace")
     cal_path = find_cal_file(metadata["force_cal_file"], trace_path)
     calibration = load_ati_calibration(cal_path)
     windows = json.loads(metadata.get("force_hands_off", "[]"))
@@ -287,7 +291,10 @@ def report(trace_path: Path, out_dir: Path | None = None) -> dict:
         + (f"; {skipped} window(s) without force samples skipped" if skipped else "")
         + f"); Fz noise there {1000 * forces.noise_fz_n:.1f} mN SD"
     )
-    print(f"  trace: {ir.attempts} attempts with a trial clock, {len(ir.t_s)} cursor samples, {len(ir.events)} contact events")
+    print(
+        f"  trace: {ir.attempts} attempts with a trial clock, {len(ir.t_s)} cursor samples, "
+        f"{len(ir.events)} contact events"
+    )
     if "force_reader_problem" in metadata:
         error = json.loads(metadata["force_reader_problem"])["error"].strip().splitlines()[-1]
         print(f"  NOTE: the force reader stopped during the session ({error}); its data end there")
@@ -295,7 +302,11 @@ def report(trace_path: Path, out_dir: Path | None = None) -> dict:
     print("\n(a) touch timing, IR minus force (positive: the IR frame reports later)")
     pairs = pair_contacts(ir, forces)
     timing = {}
-    for kind, edge in (("contact_down", f"press start (Fn > {PRESS_ON_N:g} N)"), ("contact_up", f"press end (Fn < {PRESS_OFF_N:g} N)")):
+    edges = {
+        "contact_down": f"press start (Fn > {PRESS_ON_N:g} N)",
+        "contact_up": f"press end (Fn < {PRESS_OFF_N:g} N)",
+    }
+    for kind, edge in edges.items():
         diffs = [p["diff_ms"] for p in pairs if p["event"] == kind and p["diff_ms"] is not None]
         total = sum(p["event"] == kind for p in pairs)
         timing[kind] = float(np.median(diffs)) if diffs else None
@@ -317,8 +328,9 @@ def report(trace_path: Path, out_dir: Path | None = None) -> dict:
             f"over {best.pairs} samples" + (f" ({at_zero.rms_mm:.2f} mm at lag 0)" if at_zero is not None else "")
         )
         print(
-            f"  sensor -> screen: rotation {best.rotation_deg:+.1f} deg, {'mirrored' if best.mirrored else 'not mirrored'}, "
-            f"scale {best.scale:.3f}, sensor axis at ({best.shift[0]:.1f}, {best.shift[1]:.1f}) mm on the screen"
+            f"  sensor -> screen: rotation {best.rotation_deg:+.1f} deg, "
+            f"{'mirrored' if best.mirrored else 'not mirrored'}, scale {best.scale:.3f}, "
+            f"sensor axis at ({best.shift[0]:.1f}, {best.shift[1]:.1f}) mm on the screen"
         )
         if best_lag in (LAGS_MS[0], LAGS_MS[-1]):
             print("  WARNING: the best lag is at the edge of the scan; the true delay may lie outside it")
@@ -356,7 +368,8 @@ def _plot(path, session, pairs, fits, best_lag, best, ir, forces) -> None:
     ax_lag.plot(lags, [fit.rms_mm for _, fit in fits if fit is not None], color="tab:green")
     if best is not None:
         ax_lag.axvline(best_lag, color="grey", linestyle="--")
-    ax_lag.set(title="(b) position residual over the lag", xlabel="lag, IR minus force (ms)", ylabel="residual RMS (mm)")
+    ax_lag.set(title="(b) position residual over the lag", xlabel="lag, IR minus force (ms)")
+    ax_lag.set_ylabel("residual RMS (mm)")
 
     if best is not None:
         sensor, screen = position_pairs(ir, forces, best_lag / 1000.0)
@@ -383,7 +396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         report(args.trace, args.out)
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, sqlite3.Error) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
     return 0

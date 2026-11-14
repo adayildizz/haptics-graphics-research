@@ -33,7 +33,9 @@ def force_config(**changes) -> ExperimentConfig:
 def new_trace(tmp_path: Path) -> tuple[AsyncTraceRecorder, Path]:
     path = tmp_path / "S_trace.sqlite3"
     recorder = AsyncTraceRecorder(path)
-    recorder.create_session(session_id="S", participant_id="P", started_at="t", config={}, calibration={}, app_version="test")
+    recorder.create_session(
+        session_id="S", participant_id="P", started_at="t", config={}, calibration={}, app_version="test"
+    )
     return recorder, path
 
 
@@ -93,10 +95,13 @@ def test_the_operator_can_leave_during_a_hands_off_step(monkeypatch, quiet_scree
     assert force.hands_off == []
 
 
-def test_a_calibration_file_that_cannot_be_read_stops_the_session_before_it_starts(tmp_path, quiet_screens, monkeypatch, capsys):
+def test_a_calibration_file_that_cannot_be_read_stops_the_session_before_it_starts(
+    tmp_path, quiet_screens, monkeypatch, capsys
+):
     monkeypatch.setattr(pygame.time, "wait", lambda _ms: None)
     recorder, trace_path = new_trace(tmp_path)
-    force = ForceSession(force_config(force_cal_file=str(tmp_path / "missing.cal")), recorder, force_file_path(tmp_path, "S"))
+    cfg = force_config(force_cal_file=str(tmp_path / "missing.cal"))
+    force = ForceSession(cfg, recorder, force_file_path(tmp_path, "S"))
     assert not main_module.start_force_sensor(None, force)
     force.stop()  # what the session's finally does: nothing to stop
     assert recorder.close() is None
@@ -110,14 +115,17 @@ def test_a_calibration_file_that_cannot_be_read_stops_the_session_before_it_star
 
 def test_a_card_that_cannot_be_opened_stops_the_session_before_it_starts(tmp_path):
     recorder, trace_path = new_trace(tmp_path)
-    force = ForceSession(force_config(), recorder, force_file_path(tmp_path, "S"), partial(FakeForceSource, fail_at_start=True))
+    broken_card = partial(FakeForceSource, fail_at_start=True)
+    force = ForceSession(force_config(), recorder, force_file_path(tmp_path, "S"), broken_card)
     with pytest.raises(ForceSensorError, match="could not be opened"):
         force.start()
     assert recorder.close() is None
     assert "could not be opened" in json.loads(metadata(trace_path)["force_reader_problem"])["error"]
 
 
-def test_a_reader_that_stops_mid_session_is_noted_once_and_the_session_goes_on(tmp_path, quiet_screens, monkeypatch, capsys):
+def test_a_reader_that_stops_mid_session_is_noted_once_and_the_session_goes_on(
+    tmp_path, quiet_screens, monkeypatch, capsys
+):
     cfg = force_config(
         n_levels=2, trials_per_level=2, sweeps_per_block=1, catch_trial_pct=0.0, n_practice_trials=2,
         practice_easiest_levels=1, practice_pass_fraction=0.0, practice_voice_feedback=False,

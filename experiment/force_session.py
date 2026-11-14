@@ -62,7 +62,10 @@ def force_file_path(trace_dir: Path, session_id: str) -> Path:
 def make_source(cfg: ExperimentConfig) -> Callable[[], ForceSource]:
     """What the reader process builds its source with: the NI card of the config, or the fake card."""
     card = argparse.Namespace(
-        device=cfg.force_device, first_channel=cfg.force_first_channel, terminal=cfg.force_terminal, range_v=cfg.force_range_v
+        device=cfg.force_device,
+        first_channel=cfg.force_first_channel,
+        terminal=cfg.force_terminal,
+        range_v=cfg.force_range_v,
     )
     return source_factory(card, fake=cfg.force_fake)
 

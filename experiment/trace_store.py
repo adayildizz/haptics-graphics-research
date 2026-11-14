@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-SCHEMA_VERSION = 4  # v2: attempts carry is_practice / practice_round; v3: cursor_samples.contact; v4: attempts.trial_start_s
+# v2: attempts carry is_practice / practice_round; v3: cursor_samples.contact; v4: attempts.trial_start_s
+SCHEMA_VERSION = 4
 # Columns added after v1, with the value older recordings implicitly carried.
 ADDED_COLUMNS = (
     ("attempts", "is_practice", "INTEGER NOT NULL DEFAULT 0"),
@@ -221,7 +222,9 @@ class TraceStore:
         With it, any sample or event of the attempt is at ``trial_start_s + t_us / 1e6`` on the clock that other
         recordings of the session use too (the force sensor's file).
         """
-        self.connection.execute("UPDATE attempts SET trial_start_s = ? WHERE attempt_id = ?", (trial_start_s, attempt_id))
+        self.connection.execute(
+            "UPDATE attempts SET trial_start_s = ? WHERE attempt_id = ?", (trial_start_s, attempt_id)
+        )
         self.connection.commit()
 
     def set_metadata(self, key: str, value: str) -> None:

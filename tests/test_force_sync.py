@@ -63,7 +63,8 @@ def write_force_file(path: Path, t: np.ndarray, volts: np.ndarray) -> None:
     connection = sqlite3.connect(path)
     force_daq._create_schema(connection, 6)
     connection.executemany("INSERT INTO force_metadata VALUES (?, ?)", [("rate_hz", "1000.0"), ("channels", "6")])
-    connection.executemany("INSERT INTO force_samples VALUES (?, ?, ?, ?, ?, ?, ?)", [(k, *row) for k, row in enumerate(volts.tolist())])
+    rows = [(k, *row) for k, row in enumerate(volts.tolist())]
+    connection.executemany("INSERT INTO force_samples VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
     connection.executemany("INSERT INTO force_reads VALUES (?, ?)", [(k + 1, T0 + t[k]) for k in range(1, len(t), 2)])
     connection.commit()
     connection.close()
@@ -72,24 +73,26 @@ def write_force_file(path: Path, t: np.ndarray, volts: np.ndarray) -> None:
 def write_trace(path: Path, force_file: str) -> None:
     """One attempt per stroke: cursor samples at 60 Hz and contact events, as the IR frame reports them (late)."""
     with TraceStore(path) as store:
-        store.create_session(session_id="SYN", participant_id="P", started_at="t", config={}, calibration={}, app_version="test")
+        store.create_session(
+            session_id="SYN", participant_id="P", started_at="t", config={}, calibration={}, app_version="test"
+        )
         store.set_metadata("force_file", force_file)
         store.set_metadata("force_cal_file", "FT05411.cal")
-        store.set_metadata("force_hands_off", json.dumps([{"block": b, "start_s": T0 + s, "end_s": T0 + e} for b, s, e in HANDS_OFF]))
+        windows = [{"block": block, "start_s": T0 + start, "end_s": T0 + end} for block, start, end in HANDS_OFF]
+        store.set_metadata("force_hands_off", json.dumps(windows))
         for index, (down, up) in enumerate(STROKES, start=1):
             start = down - 0.4  # trial start, s after T0
-            attempt_id = store.start_attempt(AttemptDefinition("SYN", index, 1, 0, 0.2, 12.0, 10.0, 10.0, "left", False))
+            definition = AttemptDefinition("SYN", index, 1, 0, 0.2, 12.0, 10.0, 10.0, "left", False)
+            attempt_id = store.start_attempt(definition)
             store.set_trial_start(attempt_id, T0 + start)
             t = start + np.arange(0.0, up + 0.4 - start, FRAME_S)
             seen = finger_on_screen(t - POSITION_DELAY_S)
             contact = (t >= down + CONTACT_DELAY_S) & (t < up + CONTACT_DELAY_S)
-            store.append_samples(
-                attempt_id,
-                [
-                    CursorSample(k, round((t[k] - start) * 1e6), 16_667, 0, 0, float(x), float(y), 0.0, True, None, False, bool(c))
-                    for k, ((x, y), c) in enumerate(zip(seen, contact))
-                ],
-            )  # fmt: skip
+            samples = [
+                CursorSample(k, round((t[k] - start) * 1e6), 16_667, 0, 0, x, y, 0.0, True, None, False, c)
+                for k, ((x, y), c) in enumerate(zip(seen.tolist(), contact.tolist()))
+            ]
+            store.append_samples(attempt_id, samples)
             for kind, at in (("contact_down", down), ("contact_up", up)):
                 store.append_event(attempt_id, t_us=round((at + CONTACT_DELAY_S - start) * 1e6), event_type=kind)
 
