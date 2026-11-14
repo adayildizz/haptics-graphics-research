@@ -9,7 +9,7 @@ Psychophysics experiment measuring the JND (just noticeable difference) for tact
 | Tactile display | Electroadhesion, 4V peak, 125 Hz carrier frequency |
 | Position sensor | Nexio NIB170BP infrared frame, ~100 Hz |
 | Interface | IR frame presents as virtual mouse via OS driver |
-| Force sensor | ATI Nano17 (FT05411) under the glass, ATI DAQ F/T box, NI PCI-6034E card; not used in trials yet |
+| Force sensor | ATI Nano17 (FT05411) under the glass, ATI DAQ F/T box, NI PCI-6034E card; recorded through a session with `force_sensor: true` |
 
 ## Experimental Design: Method of Constant Stimuli
 
@@ -155,7 +155,8 @@ switch the generator's output off by hand.
 An ATI Nano17 force/torque sensor (serial FT05411, calibration SI-12-0.12)
 sits under the glass. ATI's DAQ F/T box turns its six strain gauges into six
 voltages, which the NI PCI-6034E card in the lab PC samples (device `Dev1`,
-inputs `ai0`-`ai5`, differential). The trial loop does not use it yet.
+inputs `ai0`-`ai5`, differential). A session can record it from start to end
+(see *Force sensor in a session*); the trial loop itself never reads it.
 
 - `force_daq.py`: the **force reader**, a process of its own that reads the
   card at 1 kHz, writes every sample (raw volts) to its own SQLite file and
@@ -163,8 +164,96 @@ inputs `ai0`-`ai5`, differential). The trial loop does not use it yet.
   `load_force(path)` reads a file back.
 - `ati_calibration.py`: reads the sensor's ATI calibration file (`.cal`) and
   turns six gauge voltages minus their zero into Fx, Fy, Fz (N) and Tx, Ty, Tz.
+- `force_session.py`: the force sensor during a session (start, hands-off
+  steps, a reader that stops, stop); used by `main.py`.
 
 Lab protocol for the stage 2 checks, step by step (in Turkish): [`force_lab_protocol.md`](force_lab_protocol.md).
+
+### Force sensor in a session
+
+Switch it on with `force_sensor: true` (in the panel: **Kuvvet sensörü**, tab
+*Donanım / İşleme*, next to the calibration file). The movement trace must be on
+as well (`record_main_trace: true`), because it is what lines the force data up
+with the finger; the config refuses the sensor without it. With the switch off a
+session runs exactly as before. The card settings stay in the config file:
+`force_device` (`Dev1`), `force_first_channel` (0: `ai0`-`ai5`), `force_terminal`
+(`diff`), `force_range_v` (10), and `force_zero_s` (3 s, the hands-off steps).
+`force_cal_file` (`FT05411.cal`) is relative to the repository root, or a full
+path. `force_fake: true` uses the fake source instead of the card, to try the
+flow on a computer without it.
+
+What changes in the session:
+
+- **Start.** While the session is set up, before *Ready to begin*, the screen
+  says *Starting the force sensor ...* and the reader process starts (a few
+  seconds on Windows). It reads the calibration file first. If either fails the
+  session does not start: the reason is on the screen and, in full, in the
+  console, and the program exits with code 1.
+- **Hands-off steps.** Right after the operator continues from the *Practice
+  trials* screen and from the *Main block* screen, the screen shows *Hands off
+  the screen* with a countdown of `force_zero_s` seconds. Make sure the
+  participant's hands are off the glass before pressing Space there. Escape
+  exits as on the other screens. Only the start and end of each step are noted;
+  the zero is computed afterwards from the quietest 0.5 s inside it.
+- **During the trials** nothing reads the sensor. Between trials the program
+  checks that the reader is still running. If it has stopped, the session goes
+  on: a warning is printed once and the trace notes it; the force data end there.
+- **End.** After the signal is switched off, the reader is stopped; it writes
+  its last samples and its summary is printed and noted in the trace.
+
+Files, next to the trace in `experiment/data/`:
+
+- `<session_id>_force.sqlite3`: every raw sample (six gauge volts, 1000 per
+  second) with times on `time.perf_counter`; no calibration is applied
+  (`force_daq.load_force` reads it back).
+- `<session_id>_trace.sqlite3` as before, plus `force_*` rows in
+  `trace_metadata` (JSON where not plain text): `force_file`, `force_cal_file`,
+  `force_card` (source, card settings, rate, the calibration's serial),
+  `force_hands_off` (`block`, `start_s`, `end_s` of each step),
+  `force_reader_summary` (samples, reads, clock offset, error) and, only if
+  something went wrong, `force_reader_problem` (when it was noticed, samples
+  so far, the error).
+
+**Clock.** The reader times its samples on the experiment's `time.perf_counter`
+(both processes read the same system clock; the reader measures and removes the
+small offset between them at start). The trace keeps every attempt's start on the same clock
+(`attempts.trial_start_s`, trace schema 4), so a cursor sample or event is at
+`trial_start_s + t_us / 1e6`, to the microsecond. The force samples' times come
+from a line through all reads of the card (`force_daq.fit_sample_times`), which
+the card's own clock and its drift fix to within half a millisecond over half an
+hour in the tests. What is left, the delays of the IR frame and of the force
+chain themselves, is what `analysis.force_sync` measures.
+
+### Checking a session: `analysis.force_sync`
+
+```
+python -m analysis.force_sync experiment/data/P01_<time>_trace.sqlite3 --out experiment/data/force_sync
+```
+
+It finds the force file and the `.cal` file from the trace (the `.cal` as
+configured, else by name in the repository root or next to the trace), takes
+the zero from the hands-off steps (each sample uses the latest step before it),
+turns the volts into forces through the calibration and nothing else, and uses
+the press force Fn = -Fz. Every difference is IR minus force, so a positive
+number means the IR frame is later.
+
+- **(a) Touch timing.** A press starts when Fn rises above 0.03 N and ends when
+  it falls below 0.015 N. Each `contact_down` / `contact_up` of the trace is
+  paired with the nearest press start / end within 0.3 s; it prints how many
+  paired, the median and the interquartile range.
+- **(b) Position.** While Fn > 0.1 N the torques give where the finger
+  presses, in the sensor's axes: x = Ty / Fn, y = -Tx / Fn (mm). These are
+  compared with the IR position of every finger-down cursor sample, shifted by
+  a lag from -150 to +150 ms; at each lag a similarity transform (rotation,
+  scale, shift, and a mirror if that fits better) is fitted. It prints the lag
+  with the smallest residual, that residual's RMS in mm (and the one at lag 0),
+  and the transform: the sensor's rotation against the screen, whether it is
+  mirrored, the scale (should be about 1) and where the sensor axis is on the
+  screen.
+
+With `--out` it also writes `<session>_force_sync.csv` (each contact event, its
+paired force time and the difference) and `<session>_force_sync.png` (the time
+differences, the residual over the lag, and both paths at the best lag).
 
 ### Force check
 
@@ -342,6 +431,7 @@ experiment/
 ├── force_daq.py         # Force reader process: the NI card at 1 kHz, every sample to SQLite, newest in shared memory
 ├── ati_calibration.py   # ATI .cal file: gauge voltages to Fx, Fy, Fz, Tx, Ty, Tz
 ├── force_measure.py     # Force check on the console: zero, noise, live forces, drift
+├── force_session.py     # The force sensor during a session: start, hands-off steps, stop, facts in the trace
 ├── trial.py             # Single trial logic, per-pass logging
 ├── display.py           # Pygame UI and screen layout
 ├── data_logger.py       # CSV/JSON logging
@@ -355,7 +445,8 @@ analysis/
 ├── trace_movement.py    # Per-attempt finger animations (GIF/MP4)
 ├── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
 ├── exploration_timeline/ # Time-coloured finger paths and region-over-time strips per trial and session
-└── render_replay/       # Replays a recording through the position rule; edge errors in mm; top-edge cue sweep
+├── render_replay/       # Replays a recording through the position rule; edge errors in mm; top-edge cue sweep
+└── force_sync.py        # Force sensor vs IR frame: touch timing and position lag of a session
 
 tests/                   # pytest: level generation, scheduling, psychometric-fit recovery
 ```
@@ -391,6 +482,14 @@ masking_noise: true       # continuous brown noise in the headphones for the who
 masking_noise_volume: 0.30
 
 blind_test_mode: false   # true -> hide bars, locate them by touch only (no visual)
+
+force_sensor: false       # true -> record the force sensor through the session (needs record_main_trace)
+force_cal_file: "FT05411.cal"  # relative to the repository root, or absolute
+force_device: "Dev1"      # the card settings: not in the panel
+force_first_channel: 0
+force_terminal: "diff"
+force_range_v: 10.0
+force_zero_s: 3.0         # each hands-off step, before practice and before the main block
 
 rng_seed: null           # null -> random, but the resolved seed is always logged
 participant_id: ""
@@ -493,7 +592,8 @@ that moment as `attempts.trial_start_s`, on `time.perf_counter()`, so a sample's
 time on that clock is `trial_start_s + t_us / 1e6`. The force sensor's file uses
 the same clock, which is how the two line up (see *Force sensor in a session*).
 Older traces load as before, with `trial_start_s` empty. `trace_metadata` also
-holds session-level facts as key/value rows (the `force_*` keys below).
+holds session-level facts as key/value rows (the `force_*` keys, see *Force
+sensor in a session*).
 
 #### Per-trial animation (`analysis/trace_movement.py`)
 

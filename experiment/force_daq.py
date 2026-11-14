@@ -13,7 +13,8 @@ file afterwards and also removes the slow drift between the card's clock and the
 
 Two sources: ``FakeForceSource`` for tests and for checking the computer, and ``NidaqmxForceSource`` for the
 card itself. The NI-DAQmx source needs the card's device name (NI MAX shows it, e.g. ``Dev1``), the first
-analog input the box is wired to, and the terminal configuration. The trial loop does not use this module yet.
+analog input the box is wired to, and the terminal configuration. A session records the sensor through
+``force_session.py``; the trial loop itself never reads it.
 """
 
 from __future__ import annotations
