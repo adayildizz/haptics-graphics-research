@@ -36,6 +36,14 @@ carrier_freq_hz: 125.0
 voltage_peak: 4.0
 ir_sample_hz_nominal: 100.0
 
+force_sensor: false              # true: record the force sensor for the whole session (needs record_main_trace)
+force_cal_file: "FT05411.cal"    # the sensor's ATI calibration; relative to the repository root, or absolute
+force_device: "Dev1"             # the NI card, as NI MAX names it
+force_first_channel: 0           # gauges on ai0-ai5
+force_terminal: "diff"           # diff | rse | nrse | default
+force_range_v: 10.0              # input range, +-10 V
+force_zero_s: 3.0                # each hands-off step, before practice and before the main block
+
 rng_seed: null
 participant_id: ""
 dominant_hand: ""               # "left" | "right": the exploring hand; arrow keys go under the other one

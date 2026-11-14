@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+from dataclasses import replace
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any, Iterable
@@ -81,6 +82,9 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("voltage_peak", "Tepe voltaj (Vpp)", "float"),
         ("ir_sample_hz_nominal", "IR frame örnekleme (Hz)", "float"),
         ("rng_seed", "RNG seed (boş = rastgele)", "optional_int"),
+        # Kart ayarları (force_device, force_first_channel, ...) panelde yok; config dosyasında kalır.
+        ("force_sensor", "Kuvvet sensörü", "bool"),
+        ("force_cal_file", "Kuvvet sensörü kalibrasyon dosyası", "str"),
     ]),
     ("Sinyal Zamanlaması", [
         ("signal_watchdog_ms", "Bekçi süresi (ms)", "float"),
@@ -199,6 +203,12 @@ FIELD_HELP: dict[str, str] = {
     "ir_sample_hz_nominal": "IR çerçevenin nominal örnekleme hızı; README'de belirtilen Nexio "
     "NIB170BP donanımının spesifikasyonu (~100 Hz), bir tasarım tercihi değil. Konumun sinyal "
     "kararlarına nasıl girdiği README'nin 'Rendering Method' bölümünde anlatılıyor.",
+    "force_sensor": "Açıksa ATI Nano17 kuvvet sensörü oturum boyunca ayrı bir süreçte 1 kHz'de okunur ve ham "
+    "gerilimler trace'in yanındaki <oturum>_force.sqlite3 dosyasına yazılır. Alıştırma ve ana bloktan önce "
+    "birkaç saniyelik bir 'eller ekrandan' adımı gelir (sıfır analizde bunlardan hesaplanır). Deneme döngüsü "
+    "sensörü okumaz. Hareket kaydı açık olmalı; kart ayarları config dosyasında.",
+    "force_cal_file": "Sensörün ATI kalibrasyon dosyası (.cal): depo köküne göre ya da tam yol. Kayıt ham volt "
+    "kalır, kalibrasyonu analiz uygular. Dosya okunamazsa oturum başlamaz.",
     "rng_seed": "Deneme sırasını karıştıran rastgele sayı üreteci tohumu. Boş bırakılırsa rastgele "
     "bir tohum seçilir; gerçekleşen tohum yine de tekrarlanabilirlik için config snapshot'ına "
     "kaydedilir.",
@@ -414,6 +424,8 @@ class LauncherApp:
             )
 
     def _populate(self, cfg: ExperimentConfig) -> None:
+        # Fields the panel does not show (the force sensor's card settings) keep this config's values on Apply.
+        self._loaded_cfg = cfg
         data = config_to_dict(cfg)
         for attr, var in self.vars.items():
             value = data.get(attr)
@@ -451,7 +463,7 @@ class LauncherApp:
                         f"{SECONDS_MIN:g}-{SECONDS_MAX:g} saniye aralığında olmalı"
                     )
                 kwargs[attr] = seconds
-        return ExperimentConfig(**kwargs)
+        return replace(self._loaded_cfg, **kwargs)
 
     def _on_apply(self) -> None:
         self.replay_tab.deactivate()

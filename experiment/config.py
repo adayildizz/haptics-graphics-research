@@ -37,6 +37,10 @@ IR_FRAME_HEIGHT_MM = 187.0
 IR_FRAME_SCREEN_WIDTH_PX = 1920
 IR_FRAME_SCREEN_HEIGHT_PX = 1080
 
+# Force sensor card: the terminal configurations force_daq.NidaqmxForceSource knows.
+FORCE_TERMINALS = ("diff", "rse", "nrse", "default")
+FORCE_QUIET_WINDOW_S = 0.5  # the zero comes from the quietest stretch this long (force_measure.QUIET_WINDOW_S)
+
 # Physical touch surface placement inside the IR frame.
 HAPTIC_SURFACE_WIDTH_MM = 194.0
 HAPTIC_SURFACE_HEIGHT_MM = 145.0
@@ -95,6 +99,16 @@ class ExperimentConfig:
     voltage_peak: float = 4.0
     ir_sample_hz_nominal: float = 100.0
 
+    # Force sensor (README: Force sensor in a session). Off: the session runs exactly as without it.
+    force_sensor: bool = False
+    force_cal_file: str = "FT05411.cal"  # the sensor's ATI calibration; relative to the repository root, or absolute
+    force_device: str = "Dev1"  # the NI card, as NI MAX names it
+    force_first_channel: int = 0  # the six gauges are wired to ai<first> .. ai<first + 5>
+    force_terminal: str = "diff"  # one of FORCE_TERMINALS
+    force_range_v: float = 10.0  # input range, +- volts
+    force_zero_s: float = 3.0  # length of each hands-off step (before practice, before the main block)
+    force_fake: bool = False  # the fake source instead of the card: tests, or trying the flow without the card
+
     # Bookkeeping
     rng_seed: int | None = None
     participant_id: str = ""
@@ -133,6 +147,20 @@ class ExperimentConfig:
             raise ValueError("masking_noise_volume must be between 0 and 1")
         if self.signal_watchdog_ms <= 0:
             raise ValueError("signal_watchdog_ms must be > 0")
+        if self.force_sensor and not self.record_main_trace:
+            raise ValueError(
+                "force_sensor needs record_main_trace: true; the trace is what lines the force data up with the finger"
+            )
+        if self.force_terminal not in FORCE_TERMINALS:
+            raise ValueError(f"force_terminal must be one of {FORCE_TERMINALS}, got {self.force_terminal!r}")
+        if self.force_first_channel < 0:
+            raise ValueError("force_first_channel must be >= 0")
+        if self.force_range_v <= 0:
+            raise ValueError("force_range_v must be > 0")
+        if self.force_zero_s < FORCE_QUIET_WINDOW_S:
+            raise ValueError(
+                f"force_zero_s must be at least {FORCE_QUIET_WINDOW_S:g} s, the quiet stretch the zero is taken from"
+            )
         if self.dominant_hand not in ("", "left", "right"):
             raise ValueError("dominant_hand must be 'left', 'right', or empty")
         if self.mode == "staircase_pilot":

@@ -110,3 +110,41 @@ def test_the_removed_render_mode_settings_are_ignored_in_a_saved_config(tmp_path
     )
     cfg = load_experiment_config(old)  # a config the GUI saved before the removal still loads
     assert cfg.bar_width_mm == 20.0 and not hasattr(cfg, "render_mode")
+
+
+# --- force sensor ------------------------------------------------------------------------------
+
+
+def test_the_force_sensor_is_off_by_default_with_the_lab_card_settings():
+    cfg = load_experiment_config(DEFAULT_CONFIG)
+    assert cfg.force_sensor is False and cfg.force_fake is False
+    assert (cfg.force_cal_file, cfg.force_device, cfg.force_first_channel) == ("FT05411.cal", "Dev1", 0)
+    assert (cfg.force_terminal, cfg.force_range_v, cfg.force_zero_s) == ("diff", 10.0, 3.0)
+
+
+def test_the_force_sensor_needs_the_trace():
+    ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, force_sensor=True)
+    with pytest.raises(ValueError, match="record_main_trace"):
+        ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, force_sensor=True, record_main_trace=False)
+    ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, record_main_trace=False)  # no sensor: no trace needed
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"force_terminal": "differential"},
+        {"force_first_channel": -1},
+        {"force_range_v": 0.0},
+        {"force_zero_s": 0.4},  # shorter than the quiet stretch the zero is taken from
+    ],
+)
+def test_the_force_card_settings_are_validated(bad):
+    with pytest.raises(ValueError):
+        ExperimentConfig(base_height_mm=10.0, bar_width_mm=10.0, **bad)
+
+
+def test_the_force_settings_agree_with_the_reader_and_the_zero():
+    from experiment import config, force_daq, force_measure
+
+    assert set(config.FORCE_TERMINALS) == set(force_daq._TERMINAL_NAMES)
+    assert config.FORCE_QUIET_WINDOW_S == force_measure.QUIET_WINDOW_S
