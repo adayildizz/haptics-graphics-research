@@ -250,6 +250,24 @@ class NidaqmxForceSource:
             task.close()
 
 
+def add_card_arguments(parser: argparse.ArgumentParser) -> None:
+    """The NI card options of every tool that opens the force sensor (``force_measure``, ``signal_scheduler``)."""
+    group = parser.add_argument_group("force sensor card (NI-DAQmx)")
+    group.add_argument("--device", default="Dev1", help="The card's device name, as NI MAX shows it (default Dev1).")
+    group.add_argument("--first-channel", type=int, default=0, help="First of the six analog inputs, ai<N> (default 0).")
+    group.add_argument("--terminal", default="diff", choices=tuple(_TERMINAL_NAMES), help="Input wiring (default diff).")
+    group.add_argument("--range-v", type=float, default=10.0, help="Input range, +- this many volts (default 10).")
+
+
+def source_factory(args: argparse.Namespace, *, fake: bool) -> Callable[[], ForceSource]:
+    """What the reader process builds its source with: the fake card, or the NI card the options above name."""
+    if fake:
+        return partial(FakeForceSource)
+    return partial(
+        NidaqmxForceSource, args.device, first_channel=args.first_channel, terminal=args.terminal, range_v=args.range_v
+    )
+
+
 class LiveClock:
     """Sample times while running: the card's spacing, anchored at the earliest start the recent reads allow."""
 

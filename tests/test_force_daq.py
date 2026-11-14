@@ -372,3 +372,19 @@ def test_the_nidaqmx_source_opens_six_differential_inputs_and_returns_samples_in
     assert calls["stopped"] and calls["closed"]
     with pytest.raises(ValueError):
         NidaqmxForceSource(terminal="pseudo")
+
+
+def test_the_command_line_options_pick_the_fake_card_or_name_the_ni_card():
+    import argparse
+
+    from experiment.force_daq import NidaqmxForceSource, add_card_arguments, source_factory
+
+    parser = argparse.ArgumentParser()
+    add_card_arguments(parser)
+    defaults = parser.parse_args([])
+    assert (defaults.device, defaults.first_channel, defaults.terminal, defaults.range_v) == ("Dev1", 0, "diff", 10.0)
+    assert isinstance(source_factory(defaults, fake=True)(), FakeForceSource)
+    args = parser.parse_args(["--device", "Dev3", "--first-channel", "8", "--terminal", "rse", "--range-v", "5"])
+    card = source_factory(args, fake=False)()  # nidaqmx is only imported when the card is started
+    assert isinstance(card, NidaqmxForceSource)
+    assert (card.physical_channels, card.terminal, card.range_v) == ("Dev3/ai8:13", "rse", 5.0)
