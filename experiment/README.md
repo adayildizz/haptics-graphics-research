@@ -164,6 +164,8 @@ inputs `ai0`-`ai5`, differential). The trial loop does not use it yet.
 - `ati_calibration.py`: reads the sensor's ATI calibration file (`.cal`) and
   turns six gauge voltages minus their zero into Fx, Fy, Fz (N) and Tx, Ty, Tz.
 
+Lab protocol for the stage 2 checks, step by step (in Turkish): [`force_lab_protocol.md`](force_lab_protocol.md).
+
 ### Force check
 
 ```
