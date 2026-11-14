@@ -83,17 +83,14 @@ class TrialRenderer:
         self._last_pos = pos
         touched_down = finger_down and self._lifted
         if touched_down:
-            # The cursor sat still while the finger was up and has now jumped: nothing may build on that.
+            # The cursor sat still while the finger was up and has now jumped: no edge may be read off that jump.
             self._start_afresh()
         self._lifted = not finger_down
-        if not finger_down:
-            # A lifted finger feels nothing, so the signal is off.
-            side = None
-            plan = rl.Plan(now_s, False, rl.side_at(self._nominal, x_mm, y_mm), "lift", (), x_mm, y_mm)
-        else:
-            plan = self._planner.plan(rl.Sample(now_s, x_mm, y_mm))
-            side = rl.side_at(self._nominal, x_mm, y_mm)
-        if touched_down and plan.on:
+        # The signal follows position only. Contact is recorded but not used: the frame reports false lifts while
+        # the finger is still on the glass, and a finger that is really lifted cannot feel the signal anyway.
+        plan = self._planner.plan(rl.Sample(now_s, x_mm, y_mm))
+        side = rl.side_at(self._nominal, x_mm, y_mm)
+        if touched_down:
             plan = replace(plan, edge="touch")
         self._signal.submit(plan)
         self._log(self._signal.drain())
@@ -108,7 +105,7 @@ class TrialRenderer:
             _warned_no_touch = True
             print(
                 "WARNING: the input device has not reported a finger touching the surface; contact is recorded "
-                "as 1 (unknown) and the signal is not switched off when the finger is lifted."
+                "as 1 (unknown). The signal does not depend on it."
             )
         if self._trace is not None:
             payload: dict[str, Any] = {

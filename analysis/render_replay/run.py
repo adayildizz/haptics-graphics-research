@@ -134,7 +134,7 @@ def format_contact(contact: Contact) -> str:
     share = contact.lifted_s / contact.recorded_s if contact.recorded_s > 0 else 0.0
     lines = [
         f"  contact: {contact.lifts} lift(s), lifted {contact.lifted_s:.1f} s of {contact.recorded_s:.1f} s "
-        f"({share:.0%}). Signal off while lifted; the rule starts afresh at each touchdown.",
+        f"({share:.0%}). The signal follows position only; time lifted is not judged.",
         f"  {contact.touch_starts} visit(s) began with a touchdown inside a bar and {contact.lift_ends} ended with a "
         "lift there; those ends have no edge error.",
     ]
