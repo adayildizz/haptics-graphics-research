@@ -228,7 +228,10 @@ def evaluate(
         # an end that a lift or touchdown cut short has no edge error, like one the recording cut short.
         t0_s = truth[stretch.first].t_s if stretch.after_lift else -math.inf
         t1_s = truth[stretch.last].t_s if stretch.before_lift else math.inf
-        own = [(t_s, on) for t_s, on in switches if t0_s <= t_s <= t1_s]
+        # The signal does not follow contact, so it can already be on at the touchdown: that state opens the stretch.
+        before = [on for t_s, on in switches if t_s <= t0_s]
+        own = [(t0_s, True)] if before and before[-1] else []
+        own += [(t_s, on) for t_s, on in switches if t0_s < t_s <= t1_s]
         outcome = _evaluate_path(mode, own, truth[stretch.first : stretch.last + 1], bars)
         errors += outcome.errors
         missed += outcome.missed
