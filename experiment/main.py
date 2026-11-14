@@ -27,6 +27,8 @@ from .input_keys import is_continue_key, is_exit_key
 if TYPE_CHECKING:
     from .trace_recorder import AsyncTraceRecorder
 
+CUE_CONNECT_WAIT_S = 15.0  # how long the start waits for the Haptuator's ESP32 before showing the ready screen
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the tactile bar-height JND experiment.")
@@ -409,7 +411,7 @@ def run() -> int:
 
     import pygame
 
-    from . import audio_cues, display, masking_noise, stimulus
+    from . import audio_cues, display, masking_noise, stimulus, trial_render
     from .signal_scheduler import SignalScheduler, exit_cleanly_on_sigterm
     from .trial_render import MODE as RENDER_MODE
 
@@ -472,12 +474,28 @@ def run() -> int:
         f"Render mode: {RENDER_MODE} (watchdog {cfg.signal_watchdog_ms:g} ms, "
         f"busy-wait margin {1000.0 * (signal.spin_s or 0.0):.1f} ms)"
     )
+    cue_link = None
+    cue_status = ""
+    if cfg.cue_enabled:
+        from .cue_link import BleakTransport, CueLink
+
+        print(f"Haptuator cue: connecting to {cfg.cue_device_name} over Bluetooth ...")
+        cue_link = CueLink(BleakTransport(cfg.cue_device_name)).start()
+        trial_render.use_cue_link(cue_link)
+        # The link keeps trying in the background; a session that starts without it runs on with EA only.
+        # The start screen is one line, so its note is short; the console says more.
+        if cue_link.wait_connected(CUE_CONNECT_WAIT_S):
+            cue_status = " Cue: connected."
+            print(f"Haptuator cue: connected to {cfg.cue_device_name}.")
+        else:
+            cue_status = " Cue: NOT connected!"
+            print(f"WARNING: Haptuator cue not connected ({cue_link.last_error or 'timed out'}); still trying.")
 
     try:
         if not wait_for_continue_or_exit(
             screen,
             f"Ready to begin ({cfg.mode}, render: {RENDER_MODE}). "
-            f"Base height {cfg.base_height_mm:g} mm, width {cfg.bar_width_mm:g} mm.",
+            f"Base height {cfg.base_height_mm:g} mm, width {cfg.bar_width_mm:g} mm.{cue_status}",
         ):
             return 0
 
@@ -505,6 +523,9 @@ def run() -> int:
         return 0
     finally:
         signal.close()
+        if cue_link is not None:
+            trial_render.use_cue_link(None)
+            cue_link.close()
         stimulus.close_hardware(instrument)
         masking_noise.stop()
         pygame.quit()

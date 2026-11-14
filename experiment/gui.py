@@ -85,6 +85,14 @@ FIELD_GROUPS: list[tuple[str, list[tuple[str, str, str]]]] = [
     ("Sinyal Zamanlaması", [
         ("signal_watchdog_ms", "Bekçi süresi (ms)", "float"),
     ]),
+    ("Haptuatör (üst kenar)", [
+        ("cue_enabled", "Üst kenarda haptuatör darbesi", "bool"),
+        ("cue_device_name", "ESP32 Bluetooth adı", "str"),
+        ("cue_rearm_mm", "Yeniden kurulma mesafesi (mm)", "float"),
+        ("cue_corner_mm", "Köşe toleransı (mm)", "float"),
+        ("cue_jump_mm", "Sıçrama sınırı (mm)", "float"),
+        ("cue_min_interval_ms", "İki darbe arası en az (ms)", "float"),
+    ]),
 ]
 
 # Yalnızca "mode" alanı geri açılırsa kullanılır (bkz. FIELD_GROUPS).
@@ -186,6 +194,17 @@ FIELD_HELP: dict[str, str] = {
     "oyalanma haritalarını data/exploration_maps altına kendiliğinden kaydeder.",
     "signal_watchdog_ms": "Ana döngüden bu süre boyunca plan gelmezse sinyal kapatılır ve trace'e "
     "signal_watchdog olayı yazılır.",
+    "cue_enabled": "Parmak bir çubuğun üst kenarını geçince (aşağı girerken ve yukarı çıkarken) ESP32'ye "
+    "Bluetooth ile mesaj gider ve haptuatör kısa bir darbe verir. Yan kenarlar darbe vermez. Oturum "
+    "başında ESP32'ye bağlanılır; başlangıç ekranı bağlantının kurulup kurulmadığını gösterir.",
+    "cue_device_name": "ESP32'nin Bluetooth'ta göründüğü ad (firmware/esp32_cue: EA-CUE).",
+    "cue_rearm_mm": "Darbe veren çubuk, parmak üst kenarından bu kadar uzaklaşana kadar yeniden darbe vermez. "
+    "Kenarda titreyen parmak art arda darbe üretmesin diye.",
+    "cue_corner_mm": "Üst kenar, çubuğun iki yanından bu kadar dışarı uzatılmış sayılır; köşeden çapraz geçiş "
+    "de darbe verir.",
+    "cue_jump_mm": "İki örnek arasındaki adım bundan uzunsa parmak kalkıp yeniden konmuş sayılır, geçiş sayılmaz.",
+    "cue_min_interval_ms": "İki darbe arasındaki en kısa süre (tek haptuatör var). ESP32'deki darbe deseni "
+    "bundan kısa olmalı.",
     "blind_test_mode": "Dokunulacak iki sütun tam ekran yüksekliğinde beyaz şeritlerle işaretlenir "
     "(konumlarını bulmak kör bir arama olmasın diye), ama şeritlerin içindeki gerçek yükseklik "
     "çubukları hiç çizilmez -- yükseklik test edilen şey olduğu için ekrandan okunamamalı, sadece "

@@ -90,6 +90,14 @@ class ExperimentConfig:
     # Rendering (README: Rendering Method)
     signal_watchdog_ms: float = 100.0
 
+    # Haptuator top-edge cue over Bluetooth (README: Top-edge cue; firmware/esp32_cue)
+    cue_enabled: bool = False
+    cue_device_name: str = "EA-CUE"
+    cue_rearm_mm: float = 3.0
+    cue_corner_mm: float = 1.0
+    cue_jump_mm: float = 20.0
+    cue_min_interval_ms: float = 100.0
+
     # Hardware
     carrier_freq_hz: float = 125.0
     voltage_peak: float = 4.0
@@ -133,6 +141,14 @@ class ExperimentConfig:
             raise ValueError("masking_noise_volume must be between 0 and 1")
         if self.signal_watchdog_ms <= 0:
             raise ValueError("signal_watchdog_ms must be > 0")
+        if self.cue_enabled and not self.cue_device_name.strip():
+            raise ValueError("cue_device_name must not be empty when cue_enabled is set")
+        if self.cue_rearm_mm < 0 or self.cue_corner_mm < 0:
+            raise ValueError("cue_rearm_mm and cue_corner_mm must be >= 0")
+        if self.cue_jump_mm <= 0:
+            raise ValueError("cue_jump_mm must be > 0")
+        if self.cue_min_interval_ms <= 0:
+            raise ValueError("cue_min_interval_ms must be > 0: there is one Haptuator, one pulse at a time")
         if self.dominant_hand not in ("", "left", "right"):
             raise ValueError("dominant_hand must be 'left', 'right', or empty")
         if self.mode == "staircase_pilot":

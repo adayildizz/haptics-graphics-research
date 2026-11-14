@@ -117,6 +117,28 @@ touch events. The summary is also
 saved to `experiment/data/input_probe_<time>.json`. The answers decide whether
 recording a contact flag and sampling per report are worth adding.
 
+### Before the first real session: Haptuator cue check
+
+Only for sessions with `cue_enabled` (see *Top-edge cue (Haptuator)* below).
+Once per computer, in the experiment's Python:
+
+```
+pip install bleak
+```
+
+Put the program on the ESP32 first (`firmware/esp32_cue/README.md`), then:
+
+```
+python -m experiment.cue_link
+```
+
+It finds `EA-CUE` over Bluetooth and sends ten messages, half a second apart.
+The Haptuator should pulse once for each. It reports how many were written and
+how long the PC took to hand each one to Bluetooth. That is the PC side only:
+the delay to the pulse itself is measured with the oscilloscope, on the ESP32's
+GPIO 4 or the Haptuator signal against the EA signal. `--count`,
+`--interval-ms` and `--device` change the defaults.
+
 ### Safety
 
 The output is switched off when a trial ends, when the session ends, when the
@@ -262,6 +284,7 @@ experiment/
 ├── stimulus.py          # Generator connection and the VISA write helpers
 ├── render_logic.py      # Pure render decisions: bars, the position rule, top-edge cue (no pygame, no VISA)
 ├── signal_scheduler.py  # The one thread that switches the output; watchdog; timing benchmark
+├── cue_link.py          # Bluetooth link to the ESP32 that plays the top-edge cue on the Haptuator; lab check
 ├── trial_render.py      # Per-trial glue: sample -> plan -> scheduler -> trace events
 ├── input_probe.py       # Rig check: position reports per second, and whether contact is reported
 ├── trial.py             # Single trial logic, per-pass logging
@@ -278,6 +301,9 @@ analysis/
 ├── exploration_maps/    # Visit-count and dwell-time maps per trial and per participant
 ├── exploration_timeline/ # Time-coloured finger paths and region-over-time strips per trial and session
 └── render_replay/       # Replays a recording through the position rule; edge errors in mm; top-edge cue sweep
+
+firmware/
+└── esp32_cue/           # ESP32-C3 sketch: receives the top-edge cue over Bluetooth, plays it on the Haptuator
 
 tests/                   # pytest: level generation, scheduling, psychometric-fit recovery
 ```
@@ -577,12 +603,16 @@ hidden and the bottom line says `Finger lifted`. A deterministic
 can be evaluated before real participant traces are available. Pass
 `--no-demo` to hide that recording.
 
-#### Top-edge cue (offline only)
+#### Top-edge cue (Haptuator)
 
-A short vibration pulse when the finger crosses a bar's top edge, for a
-voice-coil actuator worn on the finger. So far only the decision exists
-(`TopEdgeCue` in `render_logic.py`). It is not wired into the trial loop, and
-the pulse pattern and the driver are not chosen yet. The rules:
+A short vibration pulse on the Haptuator Mark II when the finger crosses a
+bar's top edge, entering or leaving. The decision is `TopEdgeCue` in
+`render_logic.py`. With `cue_enabled` set, every trial runs it and sends each
+pulse as a text message (`ENTER_LEFT`, `EXIT_LEFT`, `ENTER_RIGHT`,
+`EXIT_RIGHT`) over Bluetooth LE to an ESP32-C3. The ESP32 plays the pattern on
+the Haptuator through a MAX98357A amplifier (`cue_link.py`,
+`firmware/esp32_cue/`). The pattern is set on the ESP32 and is still a
+placeholder. The rules:
 
 - **Detected, not predicted.** The crossing is found on the straight step
   between two samples, and the pulse fires at the sample that shows it. A pulse
@@ -611,6 +641,29 @@ the pulse pattern and the driver are not chosen yet. The rules:
 
 Defaults: `d` = 3 mm, `c` = 1 mm, `J` = 20 mm, and `min_interval` = 100 ms,
 which is a placeholder until the pulse pattern is chosen.
+
+**In a session.** The settings are:
+
+- `cue_enabled`: off by default;
+- `cue_device_name`: `EA-CUE`;
+- `cue_rearm_mm`, `cue_corner_mm`, `cue_jump_mm` and `cue_min_interval_ms`:
+  `d`, `c`, `J` and `min_interval`.
+
+All of them are on the supervisor form as well.
+
+At the start, the session connects to the ESP32 and waits up to 15 s for it.
+The start screen ends with `Cue: connected.` or `Cue: NOT connected!`. Without
+a link the session runs on with EA only, and the link keeps trying in the
+background. Sending never holds up the trial loop. A message is dropped
+rather than sent late if the link is down, or if it is still waiting 100 ms
+after the trial loop handed it over: a late pulse would be felt in the wrong
+place.
+
+The trace of each attempt gets:
+
+- a `cue_crossing` event for every top-edge crossing, with its outcome
+  (`pulse`, `disarmed`, `interval` or `jump`);
+- a `cue_sent` or `cue_failed` event for every message.
 
 ```
 python -m analysis.render_replay --pulses TRACE [TRACE ...] [--out DIR] [--rearm 2,3,5] [--corner 0,1,2,3]

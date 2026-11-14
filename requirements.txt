@@ -15,6 +15,9 @@ scipy>=1.10
 matplotlib>=3.7
 psignifit>=4.0; python_version >= "3.8"
 
+# --- Haptuator top-edge cue over Bluetooth (experiment/cue_link.py; only with cue_enabled) ---
+bleak>=0.22
+
 # --- Supervisor GUI (experiment/gui.py) ---
 pillow>=9.0
 
