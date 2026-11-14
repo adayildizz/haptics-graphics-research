@@ -569,9 +569,12 @@ class ForceReader:
             return self._summary
         self._stop.set()
         stats: dict[str, Any] = {"samples": 0, "reads": 0, "error": "the force reader process did not report back"}
-        if self._process.pid is not None and self._conn.poll(timeout_s):
-            kind, payload = self._conn.recv()
-            stats = payload if kind == "stopped" else {"samples": 0, "reads": 0, "error": payload}
+        try:
+            if self._process.pid is not None and self._conn.poll(timeout_s):
+                kind, payload = self._conn.recv()
+                stats = payload if kind == "stopped" else {"samples": 0, "reads": 0, "error": payload}
+        except (EOFError, OSError):
+            pass  # the process was killed before it could report: "did not report back" is all there is to say
         self._abort()
         self._summary = ReaderSummary(stats["samples"], stats["reads"], self.clock_offset_s, self.path, stats["error"])
         return self._summary
