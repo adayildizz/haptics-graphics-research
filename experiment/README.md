@@ -173,7 +173,7 @@ python -m experiment.force_measure --label weights --cal PATH\TO\FT05411.cal
 ```
 
 (`--fake` instead of the card options tries the tool without a card.) It runs
-in the console (no window, no generator) in three steps, saying what
+in the console (no window) in three steps, saying what
 to do: hands off the screen for `--zero-s` s (default 3), recording for
 `--seconds` (default 30), hands off again. The zero of each hands-off step is
 each gauge's mean over the quietest 0.5 s of it, because hands often come back
@@ -184,6 +184,17 @@ weights on the glass to check them: 50 g is 0.49 N. At the end it prints the
 drift: the end zero minus the start zero. **The sign of Fz depends on how the
 sensor is mounted**; the weight test shows which one it is. Without `--cal`
 every value is in uncalibrated volts, and the tool says so.
+
+**EA on and off while recording.** With `--ea-every S` the tool switches the
+EA signal by itself during the recording: off for the first S seconds, then on,
+off, on, ... every S seconds, and off during both hands-off steps and at the
+end. It sets the generator up as the experiment does (`--config`, default
+`default.yaml`: carrier and voltage) and switches it through the same handle
+the experiment gives its scheduler. Each live line ends with `EA ON` / `EA off`,
+and every switch (when it was due and when the generator had taken it, on the
+samples' clock) is in the summary under `ea`. If the generator cannot be
+reached it stops with `GENERATOR ERROR`. `--fake-generator` runs the schedule
+without the generator. If the process is killed, switch the output off by hand.
 
 Other options: `--device Dev1 --first-channel 0 --terminal diff|rse|nrse|default
 --range-v 10 --data-dir DIR`. Files, in `experiment/data/` by default:

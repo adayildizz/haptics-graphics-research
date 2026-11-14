@@ -11,9 +11,11 @@ import pytest
 from experiment import force_measure
 from experiment.ati_calibration import AXES, load_ati_calibration
 from experiment.force_daq import FakeForceSource, ForceSample, fake_volts, load_force
+from experiment import stimulus
 from experiment.force_measure import (
     Zero,
     drift,
+    ea_on_at,
     live_line,
     mean_volts,
     measure_zero,
@@ -26,7 +28,7 @@ from tests.test_ati_calibration import CAL  # Fz = 0.5 g0 + 0.5 g1 + 2 g2; Fx = 
 
 SUMMARY_KEYS = {
     "label", "started", "settings", "calibration", "units", "force_file", "phases", "zero_start", "zero_end",
-    "drift", "force_samples", "force_reads", "clock_offset_s", "reader_error",
+    "drift", "force_samples", "force_reads", "clock_offset_s", "reader_error", "ea",
 }  # fmt: skip
 
 
@@ -199,3 +201,70 @@ def test_a_card_that_cannot_be_opened_still_leaves_a_summary_with_the_error(tmp_
 def test_the_hands_off_step_must_hold_the_quiet_window():
     with pytest.raises(SystemExit):
         force_measure.parse_args(["--zero-s", "0.2"])
+
+
+# --- the EA signal switched by the tool (--ea-every) -------------------------------------------
+
+
+def test_the_ea_schedule_starts_off_and_then_alternates():
+    assert [ea_on_at(t, 10.0) for t in (0.0, 9.99, 10.0, 19.99, 20.0, 30.0, 45.0, 55.0)] == [
+        False, False, True, True, False, True, False, True,
+    ]  # fmt: skip
+
+
+def check_switches(summary: dict, every_s: float) -> list[dict]:
+    """The switches alternate, start with ON, end with OFF, and all fall in the recording step."""
+    switches = summary["ea"]["switches"]
+    assert [s["on"] for s in switches] == [k % 2 == 0 for k in range(len(switches))] and not switches[-1]["on"]
+    record = summary["phases"]["record"]
+    for s in switches:
+        assert record["start_s"] <= s["asked_s"] <= s["done_s"] <= summary["phases"]["zero_end"]["start_s"]
+    assert switches[0]["asked_s"] - record["start_s"] == pytest.approx(every_s, abs=0.03)
+    return switches
+
+
+def test_with_a_fake_generator_the_signal_follows_the_schedule_and_every_switch_is_noted(tmp_path, cal_path, capsys):
+    code, summary, _ = run_tool(tmp_path, "--cal", str(cal_path), "--ea-every", "0.2", "--fake-generator")
+    out = capsys.readouterr().out
+    assert code == 0 and summary["ea"]["every_s"] == 0.2 and summary["ea"]["generator"] == "fake"
+    assert len(check_switches(summary, 0.2)) == 2  # on at 0.2 s, off at 0.4 s; the recording ends at 0.6 s
+    assert "EA signal ON" in out and "EA signal OFF" in out
+
+
+def test_a_signal_still_on_when_the_recording_ends_is_switched_off_before_the_last_zero(tmp_path, capsys):
+    code, summary, _ = run_tool(tmp_path, "--seconds", "0.3", "--ea-every", "0.2", "--fake-generator")
+    assert code == 0
+    assert len(check_switches(summary, 0.2)) == 2  # on at 0.2 s, off when the recording ends at 0.3 s
+
+
+class FakeInstrument:
+    def query(self, command: str) -> str:
+        return "FAKE,GENERATOR"
+
+
+def test_the_real_generator_is_set_up_as_the_experiment_does_and_closed_with_the_signal_off(tmp_path, monkeypatch):
+    calls: list[str] = []
+    instrument = FakeInstrument()
+    monkeypatch.setattr(stimulus, "connect_hardware", lambda cfg: calls.append(f"connect {cfg.carrier_freq_hz:g}") or instrument)
+    monkeypatch.setattr(stimulus, "signal_on", lambda inst: calls.append("on") if inst is instrument else None)
+    monkeypatch.setattr(stimulus, "signal_off", lambda inst: calls.append("off") if inst is instrument else None)
+    monkeypatch.setattr(stimulus, "close_hardware", lambda inst: calls.append("close") if inst is instrument else None)
+    code, summary, _ = run_tool(tmp_path, "--ea-every", "0.2")
+    assert code == 0
+    assert calls == ["connect 125", "on", "off", "close"]
+    assert summary["ea"]["generator"] == "FAKE,GENERATOR" and summary["ea"]["carrier_hz"] == 125.0
+    check_switches(summary, 0.2)
+
+
+def test_a_generator_that_cannot_be_reached_stops_the_run_and_says_so(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(stimulus, "connect_hardware", lambda cfg: None)
+    code, summary, _ = run_tool(tmp_path, "--ea-every", "0.2")
+    assert code == 1
+    assert summary["ea"]["error"] == "the signal generator could not be reached" and summary["drift"] is None
+    assert "GENERATOR ERROR" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("extra", [["--ea-every", "0"], ["--ea-every", "30"], ["--fake-generator"]])
+def test_an_ea_schedule_that_could_never_switch_on_is_refused(extra):
+    with pytest.raises(SystemExit):
+        force_measure.parse_args(["--seconds", "30", *extra])

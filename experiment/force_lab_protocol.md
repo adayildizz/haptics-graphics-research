@@ -125,14 +125,25 @@ belirleyecek.
 
 ## 4. EA sinyali ve sürtünme (10 dk)
 
+Bu adımda sinyali **komut kendisi** açıp kapatıyor (`--ea-every 10`): kayıt
+sinyal **kapalı** başlar, 10. saniyede açılır, 20.'de kapanır, 30.'da açılır,
+40.'ta kapanır, 50.'de açılır; kayıt bitince ve "eller uzak" adımlarında hep
+kapalıdır. Jeneratörü deney programının yaptığı gibi kurar (125 Hz kare dalga,
+`default.yaml`'daki voltaj) ve her açma/kapamanın zamanını özet dosyasına
+yazar. Canlı satırların sonunda `EA ON` / `EA off` görünür.
+
+Hazırlık: jeneratör ve amplifikatör deneydeki gibi açık ve bağlı olsun; deney
+programı (GUI) açık **olmasın**. Komut jeneratöre ulaşamazsa "GENERATOR
+ERROR" yazar ve durur. Program beklenmedik şekilde kapanırsa (pencere
+kapatılırsa, bilgisayar donarsa) jeneratörün çıkışını elle kapat.
+
 ### 4a. Parmak yokken EA sinyali
 
 ```
-python -m experiment.force_measure --cal FT05411.cal --seconds 60 --label ea_nofinger
+python -m experiment.force_measure --cal FT05411.cal --seconds 60 --ea-every 10 --label ea_nofinger
 ```
 
-Cama dokunma. Jeneratörün çıkışını elle **10 s aç, 10 s kapat**, üç kez.
-Canlı değerlere bak: çıkış açılınca Fn ya da Ft değişiyor mu?
+Cama dokunma. Canlı değerlere bak: `EA ON` olunca Fn ya da Ft değişiyor mu?
 
 - Değişmiyorsa: sorun yok.
 - Değişiyorsa: sinyal sensöre parazit yapıyor. Not et.
@@ -140,18 +151,13 @@ Canlı değerlere bak: çıkış açılınca Fn ya da Ft değişiyor mu?
 ### 4b. Hocanın istediği ölçüm: EA kapalı/açık sürtünme
 
 ```
-python -m experiment.force_measure --cal FT05411.cal --seconds 60 --label ea_slide
+python -m experiment.force_measure --cal FT05411.cal --seconds 60 --ea-every 10 --label ea_slide
 ```
 
 "Eller uzak" adımlarında elini tamamen çek. Kayıt başlayınca işaret
-parmağını yüzeyde hafif ve eşit bir baskıyla, sabit hızla ileri geri kaydır;
-bu sırada jeneratörün çıkışını **10 s kapalı, 10 s açık**, üç kez. Çıkış
-açıkken Ft artmalı; EA etkisinin sayılarla ilk görünüşü.
-
-Çıkışın ne zaman açık olduğu dosyaya kendiliğinden yazılmıyor. Bu yüzden
-canlı satırlardaki saniyeye göre değiştir: kayıt **kapalı** başlar,
-**10. saniyede aç, 20.'de kapat, 30.'da aç, 40.'ta kapat, 50.'de aç**. Bir
-geçişi kaçırırsan hangi saniyede yaptığını not et.
+parmağını yüzeyde hafif ve eşit bir baskıyla, sabit hızla ileri geri kaydır
+ve kayıt bitene kadar durma; sinyal kendiliğinden açılıp kapanacak. `EA ON`
+iken Ft artmalı; EA etkisinin sayılarla ilk görünüşü.
 
 Dosya altı gerinim ölçerin gerilimlerini ham olarak saklar (sıfır noktaları
 `_summary.json`'da); teğetsel kuvvetler Fx, Fy, normal kuvvet Fz ve sürtünme

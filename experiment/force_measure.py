@@ -15,6 +15,12 @@ through three steps, saying on the console what to do:
    their signs. A known weight on the glass checks them: 50 g presses with 0.49 N.
 3. Hands off again: a second zero. End zero minus start zero is how far the zero drifted during the run.
 
+With ``--ea-every S`` the tool also switches the EA signal by itself during the recording, so the friction can be
+compared with the signal off and on: off for the first S seconds, then on for S, off for S, and so on; it is
+always off during both hands-off steps and at the end. The generator is set up exactly as the experiment does it
+(``stimulus.connect_hardware`` with the carrier and voltage of ``--config``), and every switch is noted in the
+summary on the samples' clock. ``--fake-generator`` runs the same schedule without contacting the generator.
+
 Forces need the sensor's calibration file (``--cal``). Without it every value is the change of the six gauge
 voltages from their zero, in volts: it rises with any load, but it is not a force.
 
@@ -63,10 +69,15 @@ PRINT_EVERY_S = 0.25  # a live line four times per second
 POLL_S = 0.005  # how often the newest sample is fetched while recording
 FILE_WAIT_S = 2.0  # the reader writes to disk every 0.25 s; the first zero waits at most this long for it
 GAUGES = tuple(f"g{k}" for k in range(CHANNELS))  # names of the six gauge voltages, used without a calibration
+CONFIG_PATH = Path(__file__).resolve().parent / "configs" / "default.yaml"  # carrier and voltage for --ea-every
 
 
 class ReaderStopped(Exception):
     """The reader process ended during a step; ``ForceReader.stop`` then reports why."""
+
+
+class GeneratorUnavailable(Exception):
+    """--ea-every was asked for, but the signal generator could not be reached."""
 
 
 # --- computations: pure functions, tested without a card ---------------------------------------
@@ -171,6 +182,38 @@ def live_line(elapsed_s: float, volts: Sequence[float], zero: Sequence[float], c
     return f"{elapsed_s:6.2f} s   Fn {fn:6.3f} {u}   Ft {ft:6.3f} {u}   (Fx {fx:+.3f}  Fy {fy:+.3f}  Fz {fz:+.3f} {u})"
 
 
+def ea_on_at(elapsed_s: float, every_s: float) -> bool:
+    """The automatic EA schedule of the recording: off for the first ``every_s``, then on, off, on, ..."""
+    return int(elapsed_s // every_s) % 2 == 1
+
+
+class EaSwitcher:
+    """Switches the EA signal during the recording on the schedule of ``ea_on_at`` and notes every switch.
+
+    ``switch_on`` and ``switch_off`` do the switching: the generator's, or nothing with --fake-generator. Each
+    switch is noted with the time it was due (``asked_s``) and the time the generator had taken the command
+    (``done_s``), both on the samples' clock.
+    """
+
+    def __init__(self, every_s: float, switch_on: Any, switch_off: Any) -> None:
+        self.every_s = every_s
+        self._switch_on = switch_on
+        self._switch_off = switch_off
+        self.is_on = False  # the generator starts with the signal off
+        self.switches: list[dict[str, Any]] = []
+
+    def set(self, on: bool, now_s: float) -> None:
+        if on == self.is_on:
+            return
+        (self._switch_on if on else self._switch_off)()
+        self.is_on = on
+        self.switches.append({"on": on, "asked_s": now_s, "done_s": time.perf_counter()})
+        print(f"  ---- EA signal {'ON' if on else 'OFF'} ----", flush=True)
+
+    def follow(self, elapsed_s: float, now_s: float) -> None:
+        self.set(ea_on_at(elapsed_s, self.every_s), now_s)
+
+
 def _listing(values: dict[str, float], digits: int, signed: bool = True) -> str:
     sign = "+" if signed else ""
     return "  ".join(f"{name} {value:{sign}.{digits}f}" for name, value in values.items())
@@ -201,12 +244,15 @@ def hands_off(reader: ForceReader, seconds: float, title: str) -> tuple[float, f
     return start, now
 
 
-def record(reader: ForceReader, seconds: float, zero: Zero, calibration: AtiCalibration | None) -> tuple[float, float]:
+def record(
+    reader: ForceReader, seconds: float, zero: Zero, calibration: AtiCalibration | None, ea: EaSwitcher | None = None
+) -> tuple[float, float]:
     """The recording step: a live line every PRINT_EVERY_S; returns its start and end time.
 
     Each line averages the newest samples seen during the last LIVE_AVERAGE_S. On Windows a short sleep can
     last about 15 ms, so a line may average only a dozen samples instead of 200: enough to read the number.
-    The force file keeps every sample regardless.
+    The force file keeps every sample regardless. With ``ea`` the EA signal follows its schedule, and is off
+    again when the step ends.
     """
     start = time.perf_counter()
     end = start + seconds
@@ -214,6 +260,8 @@ def record(reader: ForceReader, seconds: float, zero: Zero, calibration: AtiCali
     next_line = start + PRINT_EVERY_S
     while (now := time.perf_counter()) < end:
         _check(reader)
+        if ea is not None:
+            ea.follow(now - start, now)
         sample = reader.latest()
         if sample is not None and (not recent or sample.index != recent[-1].index):
             recent.append(sample)
@@ -222,8 +270,13 @@ def record(reader: ForceReader, seconds: float, zero: Zero, calibration: AtiCali
         if now >= next_line:
             next_line += PRINT_EVERY_S
             if recent:
-                print("  " + live_line(now - start, mean_volts(recent), zero.volts, calibration), flush=True)
+                line = live_line(now - start, mean_volts(recent), zero.volts, calibration)
+                if ea is not None:
+                    line += f"   EA {'ON' if ea.is_on else 'off'}"
+                print("  " + line, flush=True)
         time.sleep(POLL_S)
+    if ea is not None:
+        ea.set(False, time.perf_counter())
     return start, now
 
 
@@ -284,6 +337,44 @@ def _settings(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _connect_ea(args: argparse.Namespace, info: dict[str, Any]) -> tuple[EaSwitcher, Any]:
+    """The EA switcher for --ea-every, and the generator it switches (None with --fake-generator).
+
+    The generator is set up as the experiment sets it up, with the carrier and voltage of ``--config``.
+    """
+    if args.fake_generator:
+        print(f"EA signal: FAKE generator, nothing is switched; schedule every {args.ea_every:g} s.")
+        return EaSwitcher(args.ea_every, lambda: None, lambda: None), None
+    from . import stimulus
+    from .config import load_experiment_config
+
+    cfg = load_experiment_config(args.config)
+    info.update(config=Path(args.config).name, carrier_hz=cfg.carrier_freq_hz, generator_vpp=cfg.voltage_peak)
+    print(f"Connecting to the signal generator ({cfg.carrier_freq_hz:g} Hz, {cfg.voltage_peak:g} Vpp, as the experiment) ...")
+    instrument = stimulus.connect_hardware(cfg)
+    if instrument is None:
+        raise GeneratorUnavailable("the signal generator could not be reached")
+    try:
+        info["generator"] = str(instrument.query("*IDN?")).strip()
+    except Exception:  # noqa: BLE001 -- only a label for the summary
+        info["generator"] = "connected"
+    # The generator's one switching handle, the same the experiment hands its scheduler.
+    device = stimulus.device_for(instrument)
+    return EaSwitcher(args.ea_every, device.on, device.off), instrument
+
+
+def _close_ea(ea: EaSwitcher | None, instrument: Any) -> None:
+    """Signal off and the generator closed, whatever happened before."""
+    try:
+        if ea is not None:
+            ea.set(False, time.perf_counter())
+    finally:
+        if instrument is not None:
+            from . import stimulus
+
+            stimulus.close_hardware(instrument)
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     """Starts the reader, runs the three steps, stops the reader, and writes and returns the summary."""
     calibration = load_ati_calibration(args.cal) if args.cal else None
@@ -308,7 +399,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "force_reads": 0,
         "clock_offset_s": None,
         "reader_error": None,
+        "ea": None,  # with --ea-every: the schedule, the generator and every switch
     }
+    ea_info: dict[str, Any] | None = None
+    if args.ea_every is not None:
+        ea_info = {"every_s": args.ea_every, "generator": "fake" if args.fake_generator else None, "switches": []}
+        summary["ea"] = ea_info
 
     if calibration is not None:
         summary["calibration"] = {
@@ -333,7 +429,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     print("running.")
 
     start_zero: Zero | None = None
+    ea: EaSwitcher | None = None
+    instrument: Any = None
     try:
+        if ea_info is not None:
+            ea, instrument = _connect_ea(args, ea_info)
         start_s, end_s = hands_off(reader, args.zero_s, "Step 1 of 3")
         phases["zero_start"] = {"start_s": start_s, "end_s": end_s}
         so_far = read_back(force_path, end_s)
@@ -352,15 +452,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 f"  'change' is the size of the six gauges' change from the zero (uncalibrated volts); "
                 f"each line is the mean of the last {LIVE_AVERAGE_S:g} s."
             )
-        start_s, end_s = record(reader, args.seconds, start_zero, calibration)
+        if ea is not None:
+            print(f"  The EA signal is off now, ON from {ea.every_s:g} s, then switches every {ea.every_s:g} s.")
+        start_s, end_s = record(reader, args.seconds, start_zero, calibration, ea)
         phases["record"] = {"start_s": start_s, "end_s": end_s}
 
         start_s, end_s = hands_off(reader, args.zero_s, "Step 3 of 3")
         phases["zero_end"] = {"start_s": start_s, "end_s": end_s}
     except ReaderStopped as exc:
         print(f"\nStopped before the end: {exc}.")
+    except GeneratorUnavailable as exc:
+        print(f"\nGENERATOR ERROR: {exc}. Nothing was recorded with the signal.")
+        if ea_info is not None:
+            ea_info["error"] = str(exc)
     finally:
-        stats = reader.stop()  # waits until every sample is on disk
+        try:
+            _close_ea(ea, instrument)  # the signal is off before anything else is done
+        finally:
+            stats = reader.stop()  # waits until every sample is on disk
+    if ea is not None and ea_info is not None:
+        ea_info["switches"] = ea.switches
     summary.update(
         force_samples=stats.samples, force_reads=stats.reads, clock_offset_s=stats.clock_offset_s, reader_error=stats.error
     )
@@ -390,7 +501,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m experiment.force_measure",
         description="Check the force sensor on the console: the zero and its noise with hands off, live forces "
-        "while recording, then the drift of the zero. No generator, no window.",
+        "while recording, then the drift of the zero. No window; the generator only with --ea-every.",
     )
     parser.add_argument("--label", default="check", help="What this run is; part of the file names (default check).")
     parser.add_argument("--seconds", type=float, default=30.0, help="How long to record (default 30).")
@@ -398,10 +509,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cal", type=Path, help="The sensor's ATI calibration file (.cal); without it, volts.")
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR, help=f"Where the files go (default {DATA_DIR}).")
     parser.add_argument("--fake", action="store_true", help="Use the fake force source: no card is opened.")
+    parser.add_argument(
+        "--ea-every",
+        type=float,
+        default=None,
+        metavar="S",
+        help="Switch the EA signal by itself while recording: off for the first S seconds, then on, off, ...",
+    )
+    parser.add_argument(
+        "--config", type=Path, default=CONFIG_PATH, help="Experiment config for the carrier and voltage (default: default.yaml)."
+    )
+    parser.add_argument(
+        "--fake-generator", action="store_true", help="With --ea-every: run the schedule without contacting the generator."
+    )
     add_card_arguments(parser)
     args = parser.parse_args(argv)
     if args.seconds <= 0:
         parser.error("--seconds must be positive")
+    if args.ea_every is not None and not 0 < args.ea_every < args.seconds:
+        parser.error("--ea-every must be positive and shorter than --seconds, or the signal never comes on")
+    if args.fake_generator and args.ea_every is None:
+        parser.error("--fake-generator only makes sense with --ea-every")
     if args.zero_s < QUIET_WINDOW_S:
         parser.error(f"--zero-s must be at least {QUIET_WINDOW_S:g} s, the stretch the zero is taken from")
     return args
