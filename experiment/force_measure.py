@@ -400,6 +400,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "clock_offset_s": None,
         "reader_error": None,
         "ea": None,  # with --ea-every: the schedule, the generator and every switch
+        "interrupted": False,  # stopped with Ctrl+C: what was recorded until then is kept
     }
     ea_info: dict[str, Any] | None = None
     if args.ea_every is not None:
@@ -431,6 +432,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     start_zero: Zero | None = None
     ea: EaSwitcher | None = None
     instrument: Any = None
+    recording_since: float | None = None  # start of the recording step while it runs, for a Ctrl+C inside it
     try:
         if ea_info is not None:
             ea, instrument = _connect_ea(args, ea_info)
@@ -454,8 +456,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             )
         if ea is not None:
             print(f"  The EA signal is off now, ON from {ea.every_s:g} s, then switches every {ea.every_s:g} s.")
+        recording_since = time.perf_counter()
         start_s, end_s = record(reader, args.seconds, start_zero, calibration, ea)
         phases["record"] = {"start_s": start_s, "end_s": end_s}
+        recording_since = None
 
         start_s, end_s = hands_off(reader, args.zero_s, "Step 3 of 3")
         phases["zero_end"] = {"start_s": start_s, "end_s": end_s}
@@ -465,6 +469,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         print(f"\nGENERATOR ERROR: {exc}. Nothing was recorded with the signal.")
         if ea_info is not None:
             ea_info["error"] = str(exc)
+    except KeyboardInterrupt:
+        # The summary is still written below: the samples so far, the zero and every EA switch stay usable.
+        print("\nStopped with Ctrl+C. The signal is off; everything recorded so far is kept.")
+        summary["interrupted"] = True
+        if recording_since is not None:
+            phases["record"] = {"start_s": recording_since, "end_s": time.perf_counter(), "interrupted": True}
     finally:
         try:
             _close_ea(ea, instrument)  # the signal is off before anything else is done

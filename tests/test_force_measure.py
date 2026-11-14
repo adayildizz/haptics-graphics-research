@@ -28,7 +28,7 @@ from tests.test_ati_calibration import CAL  # Fz = 0.5 g0 + 0.5 g1 + 2 g2; Fx = 
 
 SUMMARY_KEYS = {
     "label", "started", "settings", "calibration", "units", "force_file", "phases", "zero_start", "zero_end",
-    "drift", "force_samples", "force_reads", "clock_offset_s", "reader_error", "ea",
+    "drift", "force_samples", "force_reads", "clock_offset_s", "reader_error", "ea", "interrupted",
 }  # fmt: skip
 
 
@@ -268,3 +268,22 @@ def test_a_generator_that_cannot_be_reached_stops_the_run_and_says_so(tmp_path, 
 def test_an_ea_schedule_that_could_never_switch_on_is_refused(extra):
     with pytest.raises(SystemExit):
         force_measure.parse_args(["--seconds", "30", *extra])
+
+
+def test_ctrl_c_while_recording_still_writes_the_summary_with_the_switches_so_far(tmp_path, monkeypatch, capsys):
+    real_record = force_measure.record
+
+    def record_then_ctrl_c(reader, seconds, zero, calibration, ea=None):
+        real_record(reader, 0.3, zero, calibration, ea)  # the signal comes on at 0.2 s, then the operator stops
+        ea.set(True, force_measure.time.perf_counter())
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(force_measure, "record", record_then_ctrl_c)
+    code, summary, recording = run_tool(tmp_path, "--seconds", "3", "--ea-every", "0.2", "--fake-generator")
+    assert code == 1 and summary["interrupted"] is True
+    assert summary["zero_start"] is not None and summary["drift"] is None and "zero_end" not in summary["phases"]
+    assert summary["phases"]["record"]["interrupted"] is True
+    assert summary["force_samples"] == len(recording.volts) > 0
+    switches = summary["ea"]["switches"]
+    assert [s["on"] for s in switches][-1] is False  # switched off on the way out
+    assert "Stopped with Ctrl+C" in capsys.readouterr().out
