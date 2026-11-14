@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 import signal
 import statistics
 import sys
+import tempfile
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from .render_logic import Plan, Transition
@@ -374,6 +377,33 @@ def _report(label: str, late: Sequence[float], frames: Sequence[float], spin_s: 
     return p95 <= 1.0
 
 
+@contextlib.contextmanager
+def force_reader_running(args: argparse.Namespace) -> Iterator[None]:
+    """With ``--with-force`` or ``--fake-force``, the force reader process runs while the block runs.
+
+    Its samples go to a temporary file that is deleted afterwards; only its summary is printed. Without either
+    option this does nothing.
+    """
+    if not (args.with_force or args.fake_force):
+        yield
+        return
+    from .force_daq import RATE_HZ, ForceReader, source_factory  # here, not at the top: force_daq imports this module
+
+    with tempfile.TemporaryDirectory() as folder:
+        source = "the fake source" if args.fake_force else f"card {args.device}"
+        reader = ForceReader(Path(folder) / "force_during_check.sqlite3", source_factory(args, fake=args.fake_force))
+        reader.start()
+        print(f"force reader running ({source}) during the check")
+        try:
+            yield
+        finally:
+            summary = reader.stop()
+            print(
+                f"force reader: {summary.samples} samples ({summary.samples / RATE_HZ:.1f} s at {RATE_HZ:g} Hz) "
+                f"in {summary.reads} reads, " + ("no error" if summary.error is None else f"ERROR:\n{summary.error}")
+            )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m experiment.signal_scheduler",
@@ -381,6 +411,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--seconds", type=float, default=10.0, help="Duration of each measurement (default 10).")
     parser.add_argument("--no-window", action="store_true", help="Skip the measurement under the drawing loop.")
+    parser.add_argument(
+        "--with-force", action="store_true", help="Keep the force sensor's reader process (NI card) running meanwhile."
+    )
+    parser.add_argument("--fake-force", action="store_true", help="The same with the fake force source: no card.")
+    from .force_daq import add_card_arguments  # here, not at the top: force_daq imports this module
+
+    add_card_arguments(parser)
     args = parser.parse_args(argv)
 
     import platform
@@ -390,26 +427,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     # A session starts the scheduler after pygame.init(), which also sets the system timer resolution on Windows.
     pygame.init()
     print(f"{platform.platform()} · Python {platform.python_version()} · pygame {pygame.version.ver}")
-    ok = _report("main loop idle (60 Hz)", *run_benchmark(args.seconds, lambda: time.sleep(1 / 60)))
-    if not args.no_window:
-        from . import display
-        from .calibration import make_configured_ir_frame_calibration
+    with force_reader_running(args):
+        ok = _report("main loop idle (60 Hz)", *run_benchmark(args.seconds, lambda: time.sleep(1 / 60)))
+        if not args.no_window:
+            from . import display
+            from .calibration import make_configured_ir_frame_calibration
 
-        screen = display.init_window(fullscreen=False, size=(1280, 720))
-        clock = pygame.time.Clock()
-        calibration = make_configured_ir_frame_calibration(screen.get_size())
-        layout = display.make_trial_layout(screen, calibration, 10.0, 10.0, 12.0, True, 40.0)
+            screen = display.init_window(fullscreen=False, size=(1280, 720))
+            clock = pygame.time.Clock()
+            calibration = make_configured_ir_frame_calibration(screen.get_size())
+            layout = display.make_trial_layout(screen, calibration, 10.0, 10.0, 12.0, True, 40.0)
 
-        def draw_frame() -> None:
-            pygame.event.get()
-            display.draw_trial(
-                screen, layout, bar_width_mm=10.0, trial_index=1, is_practice=False,
-                touch_pos=pygame.mouse.get_pos(), remaining_time_s=20.0,
-            )  # fmt: skip
-            pygame.display.flip()
-            clock.tick(60)
+            def draw_frame() -> None:
+                pygame.event.get()
+                display.draw_trial(
+                    screen, layout, bar_width_mm=10.0, trial_index=1, is_practice=False,
+                    touch_pos=pygame.mouse.get_pos(), remaining_time_s=20.0,
+                )  # fmt: skip
+                pygame.display.flip()
+                clock.tick(60)
 
-        ok = _report("under the trial's draw loop", *run_benchmark(args.seconds, draw_frame)) and ok
+            ok = _report("under the trial's draw loop", *run_benchmark(args.seconds, draw_frame)) and ok
     pygame.quit()
     print("PASS: p95 <= 1 ms" if ok else "FAIL: p95 > 1 ms -- report this before running a session")
     return 0 if ok else 1

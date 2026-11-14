@@ -1,0 +1,188 @@
+# Kuvvet sensörü: laboratuvar kontrolleri (Aşama 2)
+
+Amaç: Nano17'nin newton cinsinden doğru ölçtüğünü, yükün tamamının sensörden
+geçtiğini, sıfır noktasının ne kadar kaydığını ve EA sinyalinin sensörü bozup
+bozmadığını görmek. Süre: yaklaşık 45 dakika.
+
+> **Önemli:** Her şey komut satırından, bizim komutla yapılır; başka bir
+> programa gerek yok. NI kartını aynı anda yalnızca **bir** program okuyabilir:
+> NI MAX'te açık bir Test Panel varsa bizim komutu çalıştırmadan önce kapat,
+> yoksa "resource is reserved" gibi bir hata alırsın.
+
+---
+
+## 0. Hazırlık (5 dk)
+
+1. GitHub Desktop: **Fetch origin**, sonra branch olarak **`force-sensor`**'ı seç.
+2. Repo klasöründe bir komut satırı aç ve venv'i etkinleştir.
+
+   PowerShell:
+   ```
+   cd C:\Users\user\Projects\haptic_experiment_ada
+   .\venv\Scripts\Activate.ps1
+   ```
+   cmd:
+   ```
+   cd C:\Users\user\Projects\haptic_experiment_ada
+   venv\Scripts\activate
+   ```
+   (venv klasörünün adı farklıysa onu yaz.)
+3. `nidaqmx` kurulu mu?
+   ```
+   python -c "import nidaqmx; print('ok')"
+   ```
+   `ok` yazmazsa: `pip install nidaqmx`. **NI-DAQmx sürücüsünü güncelleme**
+   (PCI-6034E eski bir kart, yeni sürücüler desteği bırakmış olabilir).
+4. Kodun çalıştığını kartsız dene:
+   ```
+   python -m experiment.force_measure --fake --seconds 5 --zero-s 1 --label fake
+   ```
+5. `.cal` dosyasının bir kopyasını **repo klasörüne** koy (aşağıdaki komutlar
+   `FT05411.cal` adını varsayıyor; adı farklıysa komutlarda değiştir). Bir
+   kopyasını da Mac'e getir.
+6. Plakanın nasıl durduğunun fotoğrafını çek: sensörden başka destek var mı?
+
+---
+
+## 1. Kalibrasyon dosyası okunuyor mu? (1 dk)
+
+```
+python -c "from experiment.ati_calibration import load_ati_calibration as load; c = load('FT05411.cal'); print(c.serial, c.part_number, c.force_units, c.torque_units, c.gauges)"
+```
+
+`FT05411 SI-12-0.12 N N-mm 6` gibi bir satır yazmalı. Hata verirse ya da
+birimler N değilse, çıktıyı olduğu gibi kaydet ve devam etme.
+
+---
+
+## 2. Ağırlık testi (15 dk)
+
+Bilinen ağırlıkla sensörün doğru newton gösterdiğini ve yükün tamamının
+sensörden geçtiğini kontrol eder. Ağırlık gerçek değeri bildiğimiz bir yük
+olduğu için en güvenilir kontrol budur.
+
+1. Ağırlıkların altına kâğıt/bez koyacaksan **şimdi** koy. Sonra:
+   ```
+   python -m experiment.force_measure --cal FT05411.cal --seconds 180 --label weights
+   ```
+2. "Hands OFF" geri sayımında elini ve kolunu plakadan ve çerçeveden çek.
+3. Kayıt başlayınca saniyede 4 satır yazar. Her konum için:
+   - Ağırlığı koymadan önce satırdaki **Fz**'yi oku (0'a yakın olmalı).
+   - Ağırlığı yavaşça koy, elini çek, 3–4 s bekle, **Fz**'yi yeniden oku.
+   - Ağırlığı kaldır; Fz eski değerine dönmeli.
+   - Ağırlığın kuvveti = (ağırlıkla Fz) − (ağırlıksız Fz).
+4. Sıra: **orta**, **dört köşe**, **iki çubuğun yeri**. 180 s yetmezse
+   komutu farklı bir etiketle yeniden çalıştır (`--label weights2`).
+5. 2–3 farklı ağırlıkla tekrarla. 200 g'dan ağırına gerek yok (parmak
+   kuvvetleri 0,1–1 N arası).
+
+Beklenen kuvvet = kütle × 9,81:
+
+| Ağırlık | Beklenen Fz |
+|---|---|
+| 10 g | 0,098 N |
+| 20 g | 0,196 N |
+| 50 g | 0,49 N |
+| 100 g | 0,98 N |
+| 200 g | 1,96 N |
+
+Neye bakıyoruz:
+
+- **Her konumda aynı mı?** En önemli soru. Köşelerde belirgin şekilde düşükse
+  yükün bir kısmı desteklerden geçiyor.
+- **Beklenen değere yakın mı?** Uzaksa eski kalibrasyon ya da montaj sorunlu
+  olabilir.
+- **Fz'nin işareti:** ağırlık koyunca eksi mi, artı mı? Not et.
+- **Fx, Fy** ağırlık koyunca belirgin şekilde değişmemeli (düz duran
+  ağırlık yana itmez).
+
+Doldurulacak tablo:
+
+| Ağırlık | Konum | Fz ağırlıksız | Fz ağırlıkla | Fark | Fx, Fy değişti mi? |
+|---|---|---|---|---|---|
+| | orta | | | | |
+| | sol üst köşe | | | | |
+| | sağ üst köşe | | | | |
+| | sol alt köşe | | | | |
+| | sağ alt köşe | | | | |
+| | sol çubuk | | | | |
+| | sağ çubuk | | | | |
+
+---
+
+## 3. Sıfır kayması (5 dk)
+
+```
+python -m experiment.force_measure --cal FT05411.cal --seconds 30 --label drift
+```
+
+30 s boyunca deneydeki gibi parmağını gezdir ve bastır. Başta ve sonda "eller
+uzak" dediğinde elini **tamamen** çek. Sonda sıfırın ne kadar kaydığını newton
+olarak yazar. **3 kez** yap. Sonuç, deneyde ne sıklıkla sıfırlayacağımızı
+belirleyecek.
+
+---
+
+## 4. EA sinyali ve sürtünme (10 dk)
+
+Bu adımda sinyali **komut kendisi** açıp kapatıyor (`--ea-every 10`): kayıt
+sinyal **kapalı** başlar, 10. saniyede açılır, 20.'de kapanır, 30.'da açılır,
+40.'ta kapanır, 50.'de açılır; kayıt bitince ve "eller uzak" adımlarında hep
+kapalıdır. Jeneratörü deney programının yaptığı gibi kurar (125 Hz kare dalga,
+`default.yaml`'daki voltaj) ve her açma/kapamanın zamanını özet dosyasına
+yazar. Canlı satırların sonunda `EA ON` / `EA off` görünür.
+
+Hazırlık: jeneratör ve amplifikatör deneydeki gibi açık ve bağlı olsun; deney
+programı (GUI) açık **olmasın**. Komut jeneratöre ulaşamazsa "GENERATOR
+ERROR" yazar ve durur. Program beklenmedik şekilde kapanırsa (pencere
+kapatılırsa, bilgisayar donarsa) jeneratörün çıkışını elle kapat.
+
+### 4a. Parmak yokken EA sinyali
+
+```
+python -m experiment.force_measure --cal FT05411.cal --seconds 60 --ea-every 10 --label ea_nofinger
+```
+
+Cama dokunma. Canlı değerlere bak: `EA ON` olunca Fn ya da Ft değişiyor mu?
+
+- Değişmiyorsa: sorun yok.
+- Değişiyorsa: sinyal sensöre parazit yapıyor. Not et.
+
+### 4b. Hocanın istediği ölçüm: EA kapalı/açık sürtünme
+
+```
+python -m experiment.force_measure --cal FT05411.cal --seconds 60 --ea-every 10 --label ea_slide
+```
+
+"Eller uzak" adımlarında elini tamamen çek. Kayıt başlayınca işaret
+parmağını yüzeyde hafif ve eşit bir baskıyla, sabit hızla ileri geri kaydır
+ve kayıt bitene kadar durma; sinyal kendiliğinden açılıp kapanacak. `EA ON`
+iken Ft artmalı; EA etkisinin sayılarla ilk görünüşü.
+
+Dosya altı gerinim ölçerin gerilimlerini ham olarak saklar (sıfır noktaları
+`_summary.json`'da); teğetsel kuvvetler Fx, Fy, normal kuvvet Fz ve sürtünme
+katsayısı μ = √(Fx² + Fy²) / |Fz| sonradan bu dosyadan hesaplanır (Fz'nin
+işareti montaja bağlı olduğu için mutlak değeri). μ yalnızca parmağın bastığı
+anlar için hesaplanır (|Fz| yaklaşık 0,05 N'luk küçük bir eşiğin üstündeyken),
+çünkü Fz sıfıra yakınken μ anlamsız derecede büyür.
+
+---
+
+## 5. Okuyucu açıkken sinyal zamanlayıcısı (2 dk)
+
+```
+python -m experiment.signal_scheduler --with-force
+```
+
+**PASS** çıkmalı. Son satırları kaydet ya da fotoğrafla.
+
+---
+
+## 6. Getirilecekler
+
+- `experiment/data/` içindeki yeni `force_*` dosyaları (her ölçüm için bir
+  `_force.sqlite3` ve bir `_summary.json`)
+- `.cal` dosyasının kopyası
+- Doldurulmuş ağırlık tablosu
+- Plakanın fotoğrafı
+- Zamanlayıcı kontrolünün sonucu

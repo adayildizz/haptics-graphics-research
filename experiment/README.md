@@ -9,6 +9,7 @@ Psychophysics experiment measuring the JND (just noticeable difference) for tact
 | Tactile display | Electroadhesion, 4V peak, 125 Hz carrier frequency |
 | Position sensor | Nexio NIB170BP infrared frame, ~100 Hz |
 | Interface | IR frame presents as virtual mouse via OS driver |
+| Force sensor | ATI Nano17 (FT05411) under the glass, ATI DAQ F/T box, NI PCI-6034E card; not used in trials yet |
 
 ## Experimental Design: Method of Constant Stimuli
 
@@ -149,6 +150,80 @@ switch the generator's output off by hand.
 - **The carrier limits edge precision.** One period of the 125 Hz carrier is
   8 ms, which is 0.8 mm at 100 mm/s.
 
+## Force sensor
+
+An ATI Nano17 force/torque sensor (serial FT05411, calibration SI-12-0.12)
+sits under the glass. ATI's DAQ F/T box turns its six strain gauges into six
+voltages, which the NI PCI-6034E card in the lab PC samples (device `Dev1`,
+inputs `ai0`-`ai5`, differential). The trial loop does not use it yet.
+
+- `force_daq.py`: the **force reader**, a process of its own that reads the
+  card at 1 kHz, writes every sample (raw volts) to its own SQLite file and
+  publishes the newest one for the experiment (`ForceReader.latest()`).
+  `load_force(path)` reads a file back.
+- `ati_calibration.py`: reads the sensor's ATI calibration file (`.cal`) and
+  turns six gauge voltages minus their zero into Fx, Fy, Fz (N) and Tx, Ty, Tz.
+
+Lab protocol for the stage 2 checks, step by step (in Turkish): [`force_lab_protocol.md`](force_lab_protocol.md).
+
+### Force check
+
+```
+python -m experiment.force_measure --label weights --cal PATH\TO\FT05411.cal
+```
+
+(`--fake` instead of the card options tries the tool without a card.) It runs
+in the console (no window) in three steps, saying what
+to do: hands off the screen for `--zero-s` s (default 3), recording for
+`--seconds` (default 30), hands off again. The zero of each hands-off step is
+each gauge's mean over the quietest 0.5 s of it, because hands often come back
+early; the noise there is printed. While recording it prints, four times a
+second and averaged over the last 0.2 s, the press force Fn = |Fz|, the
+lateral force Ft = sqrt(Fx² + Fy²) and Fx, Fy, Fz with their signs. Put known
+weights on the glass to check them: 50 g is 0.49 N. At the end it prints the
+drift: the end zero minus the start zero. **The sign of Fz depends on how the
+sensor is mounted**; the weight test shows which one it is. Without `--cal`
+every value is in uncalibrated volts, and the tool says so.
+
+**EA on and off while recording.** With `--ea-every S` the tool switches the
+EA signal by itself during the recording: off for the first S seconds, then on,
+off, on, ... every S seconds, and off during both hands-off steps and at the
+end. It sets the generator up as the experiment does (`--config`, default
+`default.yaml`: carrier and voltage) and switches it through the same handle
+the experiment gives its scheduler. Each live line ends with `EA ON` / `EA off`,
+and every switch (when it was due and when the generator had taken it, on the
+samples' clock) is in the summary under `ea`. If the generator cannot be
+reached it stops with `GENERATOR ERROR`. `--fake-generator` runs the schedule
+without the generator. If the process is killed, switch the output off by hand.
+
+Other options: `--device Dev1 --first-channel 0 --terminal diff|rse|nrse|default
+--range-v 10 --data-dir DIR`. Files, in `experiment/data/` by default:
+
+- `force_<label>_<time>_force.sqlite3`: every raw sample, as the reader wrote it;
+- `force_<label>_<time>_summary.json`: settings, the `.cal` file name, serial
+  and part number, both zeros (volts), noise, drift, the start and end of each
+  step on the samples' clock, the sample count and any reader error.
+
+The file keeps raw volts; the calibration is applied when reading back.
+
+### Timing check with the reader running
+
+```
+python -m experiment.signal_scheduler --with-force
+```
+
+The timing check from above, with the force reader reading the card for its
+whole length (the same card options as above; `--fake-force` uses the fake
+source instead). Afterwards it prints the reader's sample count and any error.
+PASS and FAIL mean the same as without it.
+
+### Setup on the lab PC
+
+- `pip install nidaqmx` in the experiment's Python.
+- The NI-DAQmx driver from NI. **Check before upgrading it**: the PCI-6034E is
+  an old E Series card that newer driver versions may no longer support.
+- The device name (`Dev1`) is the one NI MAX shows for the card.
+
 ## Procedure
 
 Each session runs as a single participant-facing fullscreen flow. The
@@ -264,6 +339,9 @@ experiment/
 ├── signal_scheduler.py  # The one thread that switches the output; watchdog; timing benchmark
 ├── trial_render.py      # Per-trial glue: sample -> plan -> scheduler -> trace events
 ├── input_probe.py       # Rig check: position reports per second, and whether contact is reported
+├── force_daq.py         # Force reader process: the NI card at 1 kHz, every sample to SQLite, newest in shared memory
+├── ati_calibration.py   # ATI .cal file: gauge voltages to Fx, Fy, Fz, Tx, Ty, Tz
+├── force_measure.py     # Force check on the console: zero, noise, live forces, drift
 ├── trial.py             # Single trial logic, per-pass logging
 ├── display.py           # Pygame UI and screen layout
 ├── data_logger.py       # CSV/JSON logging
