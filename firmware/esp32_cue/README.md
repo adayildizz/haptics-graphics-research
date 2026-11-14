@@ -1,28 +1,32 @@
 # ESP32 cue receiver
 
 The ESP32 side of the top-edge cue (`TopEdgeCue` in `experiment/render_logic.py`). Each time the cue fires, that
-is, each time the finger crosses a bar's top edge (entering or leaving), the experiment PC will send one short text
-message over Bluetooth LE. The ESP32 then plays a pulse on the **Haptuator Mark II** through a **MAX98357A**
-amplifier. On the PC, `experiment/cue_link.py` sends them during a session with `cue_enabled` set, and
-`python -m experiment.cue_link` sends test messages (`experiment/README.md`, *Top-edge cue (Haptuator)*). A phone
-can send them too (see the check at the end).
+is, each time the finger crosses a bar's top edge (entering or leaving), the experiment PC sends one short text
+message. The ESP32 then plays a pulse on the **Haptuator Mark II** through a **MAX98357A** amplifier. On the PC,
+`experiment/cue_link.py` sends them during a session with `cue_enabled` set, and `python -m experiment.cue_link`
+sends test messages (`experiment/README.md`, *Top-edge cue (Haptuator)*). A phone can send them too, over
+Bluetooth (see the check at the end).
 
-The board is an **ESP32-C3 Super Mini**, and the PC connects to it directly over Bluetooth. The Arduino tools below
-are only used to put this program on the board; there is no Arduino board in between.
+The board is an **ESP32-C3 Super Mini**. The PC connects to it directly, in one of two ways; the ESP32 always
+listens on both, and the PC's `cue_connection` setting picks one:
+
+- **USB** (the default): the Type-C data cable from the board to the PC. The PC needs no Bluetooth, and the cable
+  also powers the board.
+- **Bluetooth LE**: wireless, as `EA-CUE`. The PC needs Bluetooth.
+
+The Arduino tools below are only used to put this program on the board; there is no Arduino board in between.
 
 On every valid message the ESP32:
 
 - plays the pulse pattern on the Haptuator;
 - raises **GPIO 4** (`MARK_PIN`) for 2 ms, for the oscilloscope;
 - lights the blue LED (GPIO 8) for 0.1 s;
-- prints the message on the serial monitor (115200 baud), for example `EXIT_LEFT at 5123456 us`.
+- prints the message on the serial monitor (115200 baud), for example `EXIT_LEFT at 5123456 us via usb`.
 
 ## Message format
 
-The messages travel over Bluetooth only. The USB cable is used just to upload the sketch and to read the serial
-monitor; no cue message goes over it.
-
-One message per write: a line of text ending in a newline (`\n`). The newline may be left out.
+The same text messages over either link. Over USB, one line each, ending in a newline (`\n`). Over Bluetooth, one
+message per write, where the newline may be left out.
 
 | Message | Sent when the finger crosses the top edge of | ESP32 |
 | --- | --- | --- |
@@ -109,8 +113,9 @@ arduino-cli upload -p $PORT --fqbn $FQBN firmware/esp32_cue
 arduino-cli monitor -p $PORT --config baudrate=115200
 ```
 
-The monitor should print `EA-CUE advertising; Haptuator 2 x 25 ms at 200 Hz`. If it shows nothing, the line was
-probably printed before the monitor opened: go on with the phone check. Close the monitor with Ctrl+C.
+The monitor should print `EA-CUE ready on USB and Bluetooth; Haptuator 2 x 25 ms at 200 Hz`. If it shows nothing,
+the line was probably printed before the monitor opened. Close the monitor with Ctrl+C. **It must be closed during
+a session over USB:** a serial port can be open in one program only.
 
 - **No port appears, or the upload cannot connect:** hold the **BOOT** button while plugging the USB cable in,
   release it, and upload again. Then press **RST** (or plug the cable in again) to start the program. The board
@@ -129,20 +134,33 @@ at 115200 baud.
 | Service | `cfdd2bb4-1857-421a-9450-e9c8a92ea3f9` | advertised, device name `EA-CUE` |
 | CUE | `03c34c2a-b29f-4040-b812-5778ed2507cd` | PC → ESP32, write with or without response |
 
-## Check with a phone, before any PC code
+## Check over USB, from the serial monitor
+
+With the board plugged in and the serial monitor open (Arduino IDE, or `arduino-cli monitor` above):
+
+1. Type `EXIT_LEFT` and send it with a newline. In the Arduino IDE, set the line ending to "New Line".
+2. Expected: the Haptuator gives a double pulse, the LED lights briefly, and the monitor prints
+   `EXIT_LEFT at … us via usb`.
+3. Send `HELLO`. Expected: `ignored (usb): "HELLO"`, and the Haptuator stays still.
+
+Close the monitor afterwards, before the PC check `python -m experiment.cue_link`.
+
+## Check with a phone, over Bluetooth
 
 With nRF Connect (Android or iOS):
 
 1. Scan, find `EA-CUE`, connect.
 2. On the CUE characteristic (`03c34c2a-…`), write the text (UTF-8) `EXIT_LEFT`.
 3. Expected: the Haptuator gives a double pulse, the LED lights briefly, and the serial monitor prints
-   `EXIT_LEFT at … us`.
-4. Write `ENTER_RIGHT`. Expected: the same, with `ENTER_RIGHT at … us`.
-5. Write `HELLO`. Expected: `ignored: "HELLO"`, and the Haptuator stays still.
+   `EXIT_LEFT at … us via bluetooth`.
+4. Write `ENTER_RIGHT`. Expected: the same, with `ENTER_RIGHT at … us via bluetooth`.
+5. Write `HELLO`. Expected: `ignored (bluetooth): "HELLO"`, and the Haptuator stays still.
+
+Disconnect the phone afterwards: the ESP32 takes one Bluetooth connection at a time.
 
 ## Not done yet
 
 - Choosing the pulse pattern and the amplitude.
-- Trying the PC side with the ESP32. It is written, but so far tested only against a fake Bluetooth link.
-- A request for a short connection interval. The PC (Windows) picks the interval, and the latency measurement
-  will show whether asking for a shorter one is worth it.
+- Trying the PC side with the ESP32. It is written, but so far tested only against fake USB and Bluetooth links.
+- For Bluetooth: a request for a short connection interval. The PC (Windows) picks the interval, and the latency
+  measurement will show whether asking for a shorter one is worth it.

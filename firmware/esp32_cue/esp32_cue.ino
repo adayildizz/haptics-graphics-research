@@ -1,5 +1,6 @@
-// ESP32 side of the top-edge cue: receives cue messages from the experiment PC over Bluetooth LE and plays a pulse
-// on the Haptuator through a MAX98357A amplifier.
+// ESP32 side of the top-edge cue: receives cue messages from the experiment PC and plays a pulse on the Haptuator
+// through a MAX98357A amplifier. The messages come over the USB cable or over Bluetooth LE; both are always open,
+// and the PC's settings decide which one it uses.
 //
 // The PC sends one text line each time the finger crosses a bar's top edge: ENTER_LEFT, EXIT_LEFT, ENTER_RIGHT or
 // EXIT_RIGHT. On each one the ESP32 sends the pulse pattern to the amplifier over I2S, raises MARK_PIN (for the
@@ -53,6 +54,9 @@ static int16_t pattern[2 * PATTERN_FRAMES];  // stereo frames, the same sample o
 
 static I2SClass i2s;
 static QueueHandle_t pulses = nullptr;  // one item per pattern to play
+static char usbLine[32];                // the USB line being received, up to its newline
+static size_t usbLength = 0;
+static bool usbOverflow = false;
 static volatile bool markHigh = false;
 static volatile uint32_t markSinceUs = 0;
 static volatile bool ledOn = false;
@@ -104,6 +108,50 @@ static void playerTask(void *) {
   }
 }
 
+// One message, from either link. Plays the pulse for a known message; anything else is reported and ignored.
+static void handleMessage(const char *text, size_t length, uint32_t receivedUs, const char *source) {
+  // The newline may be left out, so that a phone app can send the bare word.
+  while (length > 0 && (text[length - 1] == '\n' || text[length - 1] == '\r')) {
+    length--;
+  }
+  const int index = messageIndex(text, length);
+  if (index < 0) {
+    Serial.printf("ignored (%s): \"%.*s\"\n", source, (int)(length < 40 ? length : 40), text);
+    return;
+  }
+  // The mark first: its rising edge is the arrival time the oscilloscope compares with the EA signal.
+  digitalWrite(MARK_PIN, HIGH);
+  markSinceUs = receivedUs;
+  markHigh = true;
+  const uint8_t item = (uint8_t)index;
+  const bool dropped = xQueueSend(pulses, &item, 0) != pdTRUE;
+  setLed(true);
+  ledSinceMs = millis();
+  ledOn = true;
+  Serial.printf("%s at %lu us via %s%s\n", MESSAGES[index], (unsigned long)receivedUs, source,
+                dropped ? " (pulse dropped: two already waiting)" : "");
+}
+
+// The same messages over the USB cable: one line each, ending in a newline. A line too long to be one is ignored.
+static void readUsb() {
+  while (Serial.available() > 0) {
+    const int c = Serial.read();
+    if (c == '\n') {
+      if (usbOverflow) {
+        Serial.println("ignored (usb): line too long");
+      } else {
+        handleMessage(usbLine, usbLength, micros(), "usb");
+      }
+      usbLength = 0;
+      usbOverflow = false;
+    } else if (usbLength < sizeof(usbLine)) {
+      usbLine[usbLength++] = (char)c;
+    } else {
+      usbOverflow = true;
+    }
+  }
+}
+
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     Serial.println("connected");
@@ -117,34 +165,18 @@ class ServerCallbacks : public BLEServerCallbacks {
 
 class CueCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *characteristic) override {
+    // One message per write.
     const uint32_t receivedUs = micros();
-    const char *text = (const char *)characteristic->getData();
-    size_t length = characteristic->getLength();
-    // One line per write. The newline may be left out, so that a phone app can send the bare word.
-    while (length > 0 && (text[length - 1] == '\n' || text[length - 1] == '\r')) {
-      length--;
-    }
-    const int index = messageIndex(text, length);
-    if (index < 0) {
-      Serial.printf("ignored: \"%.*s\"\n", (int)(length < 40 ? length : 40), text);
-      return;
-    }
-    // The mark first: its rising edge is the arrival time the oscilloscope compares with the EA signal.
-    digitalWrite(MARK_PIN, HIGH);
-    markSinceUs = receivedUs;
-    markHigh = true;
-    const uint8_t item = (uint8_t)index;
-    const bool dropped = xQueueSend(pulses, &item, 0) != pdTRUE;
-    setLed(true);
-    ledSinceMs = millis();
-    ledOn = true;
-    Serial.printf("%s at %lu us%s\n", MESSAGES[index], (unsigned long)receivedUs,
-                  dropped ? " (pulse dropped: two already waiting)" : "");
+    handleMessage((const char *)characteristic->getData(), characteristic->getLength(), receivedUs, "bluetooth");
   }
 };
 
 void setup() {
   Serial.begin(115200);
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+  // Serial is the USB cable. A PC that sends cues over it need not read these lines: never wait for it to.
+  Serial.setTxTimeoutMs(0);
+#endif
   pinMode(MARK_PIN, OUTPUT);
   digitalWrite(MARK_PIN, LOW);
 #ifdef LED_BUILTIN
@@ -173,11 +205,12 @@ void setup() {
   advertising->addServiceUUID(SERVICE_UUID);
   advertising->setScanResponse(true);
   BLEDevice::startAdvertising();
-  Serial.printf("%s advertising; Haptuator %d x %lu ms at %.0f Hz\n", DEVICE_NAME, PULSE_COUNT,
+  Serial.printf("%s ready on USB and Bluetooth; Haptuator %d x %lu ms at %.0f Hz\n", DEVICE_NAME, PULSE_COUNT,
                 (unsigned long)PULSE_MS, FREQUENCY_HZ);
 }
 
 void loop() {
+  readUsb();
   if (markHigh && micros() - markSinceUs >= MARK_US) {
     digitalWrite(MARK_PIN, LOW);
     markHigh = false;
