@@ -156,6 +156,10 @@ def run_trial(
     )
 
     trial_start = time.perf_counter()
+    if trace_attempt is not None:
+        # Every t_us of this attempt counts from trial_start. Storing it on perf_counter lines the attempt up with
+        # anything else recorded on that clock during the session, such as the force sensor's samples.
+        trace_attempt.set_trial_start(trial_start)
     last_pos = pygame.mouse.get_pos()
     # The touch frame reports a finger on the glass as the left mouse button held down.
     contact = bool(pygame.mouse.get_pressed()[0])

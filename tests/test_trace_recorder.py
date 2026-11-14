@@ -65,3 +65,24 @@ def test_async_recorder_writes_batched_attempt_in_order(tmp_path):
     assert connection.execute("SELECT outcome, response FROM attempts").fetchone() == ("answered", "right")
     assert connection.execute("SELECT event_type FROM trace_events").fetchone() == ("response",)
     connection.close()
+
+
+def test_the_trial_start_and_session_facts_reach_the_trace(tmp_path):
+    path = tmp_path / "clock_trace.sqlite3"
+    recorder = AsyncTraceRecorder(path)
+    recorder.create_session(
+        session_id="S", participant_id="P", started_at="t", config={}, calibration={}, app_version="test"
+    )  # fmt: skip
+    attempt = recorder.start_attempt("1:1", AttemptDefinition("S", 1, 1, 0, 0.2, 12.0, 10.0, 10.0, "left", False))
+    attempt.set_trial_start(12345.678901234)
+    attempt.finish(ended_us=recorder.elapsed_us(), outcome="timeout")
+    attempt.set_trial_start(1.0)  # a finished attempt is not changed any more
+    recorder.set_metadata("force_file", "S_force.sqlite3")
+    assert recorder.close() is None
+
+    connection = sqlite3.connect(path)
+    assert connection.execute("SELECT trial_start_s FROM attempts").fetchone() == (12345.678901234,)
+    metadata = dict(connection.execute("SELECT key, value FROM trace_metadata"))
+    connection.close()
+    assert metadata["force_file"] == "S_force.sqlite3"
+    assert metadata["schema_version"] == "4"

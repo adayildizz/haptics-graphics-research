@@ -72,6 +72,13 @@ class AsyncTraceRecorder:
         self._submit("start_attempt", attempt_key, definition)
         return AttemptTraceBuffer(self, attempt_key)
 
+    def set_metadata(self, key: str, value: str) -> None:
+        """A session-level fact for ``trace_metadata``; written by the worker thread like everything else."""
+        self._submit("metadata", key, value)
+
+    def _set_trial_start(self, attempt_key: str, trial_start_s: float) -> None:
+        self._submit("trial_start", attempt_key, trial_start_s)
+
     def _append_samples(self, attempt_key: str, samples: list[CursorSample]) -> None:
         self._submit("samples", attempt_key, samples)
 
@@ -125,6 +132,12 @@ class AsyncTraceRecorder:
                     elif command.kind == "start_attempt":
                         attempt_key, definition = command.payload
                         attempt_ids[attempt_key] = store.start_attempt(definition)
+                    elif command.kind == "trial_start":
+                        attempt_key, trial_start_s = command.payload
+                        store.set_trial_start(attempt_ids[attempt_key], trial_start_s)
+                    elif command.kind == "metadata":
+                        key, value = command.payload
+                        store.set_metadata(key, value)
                     elif command.kind == "samples":
                         attempt_key, samples = command.payload
                         store.append_samples(attempt_ids[attempt_key], samples)
@@ -185,6 +198,12 @@ class AttemptTraceBuffer:
 
     def session_elapsed_us(self) -> int:
         return self._recorder.elapsed_us()
+
+    def set_trial_start(self, trial_start_s: float) -> None:
+        """The trial's ``time.perf_counter()`` start, from which every ``t_us`` of this attempt counts."""
+        if self._closed:
+            return
+        self._recorder._set_trial_start(self.attempt_key, trial_start_s)
 
     def flush(self) -> None:
         if not self._samples:

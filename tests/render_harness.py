@@ -52,6 +52,10 @@ class FakeAttempt:
         self.samples: list = []
         self.events: list[tuple[int, str, dict]] = []
         self.finished: dict | None = None
+        self.trial_start_s: float | None = None
+
+    def set_trial_start(self, trial_start_s: float) -> None:
+        self.trial_start_s = trial_start_s
 
     def add_sample(self, sample) -> None:
         self.samples.append(sample)

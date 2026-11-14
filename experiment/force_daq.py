@@ -13,7 +13,8 @@ file afterwards and also removes the slow drift between the card's clock and the
 
 Two sources: ``FakeForceSource`` for tests and for checking the computer, and ``NidaqmxForceSource`` for the
 card itself. The NI-DAQmx source needs the card's device name (NI MAX shows it, e.g. ``Dev1``), the first
-analog input the box is wired to, and the terminal configuration. The trial loop does not use this module yet.
+analog input the box is wired to, and the terminal configuration. A session records the sensor through
+``force_session.py``; the trial loop itself never reads it.
 """
 
 from __future__ import annotations
@@ -569,9 +570,12 @@ class ForceReader:
             return self._summary
         self._stop.set()
         stats: dict[str, Any] = {"samples": 0, "reads": 0, "error": "the force reader process did not report back"}
-        if self._process.pid is not None and self._conn.poll(timeout_s):
-            kind, payload = self._conn.recv()
-            stats = payload if kind == "stopped" else {"samples": 0, "reads": 0, "error": payload}
+        try:
+            if self._process.pid is not None and self._conn.poll(timeout_s):
+                kind, payload = self._conn.recv()
+                stats = payload if kind == "stopped" else {"samples": 0, "reads": 0, "error": payload}
+        except (EOFError, OSError):
+            pass  # the process was killed before it could report: "did not report back" is all there is to say
         self._abort()
         self._summary = ReaderSummary(stats["samples"], stats["reads"], self.clock_offset_s, self.path, stats["error"])
         return self._summary

@@ -228,6 +228,15 @@ def test_a_failure_while_reading_stops_the_process_and_is_reported_by_stop(tmp_p
     assert reader.stop() is summary
 
 
+def test_a_reader_process_that_was_killed_is_reported_by_stop_without_an_exception(tmp_path):
+    reader = ForceReader(tmp_path / "force.sqlite3", partial(FakeForceSource)).start()
+    reader._process.kill()  # no chance to report back
+    reader._process.join(5.0)
+    assert not reader.running
+    summary = reader.stop(timeout_s=1.0)
+    assert summary.error == "the force reader process did not report back"
+
+
 def test_latest_gives_up_quickly_while_the_reader_holds_the_lock(tmp_path):
     reader = ForceReader(tmp_path / "force.sqlite3", partial(FakeForceSource)).start()
     try:

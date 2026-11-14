@@ -57,7 +57,7 @@ def test_a_device_that_never_reports_touch_records_contact_as_unknown_and_warns_
 
 
 def test_schema_v3_writes_contact_and_upgrades_older_files_in_place(tmp_path):
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION >= 3
     path = tmp_path / "old_trace.sqlite3"
     # A schema-1 file: no contact, no is_practice / practice_round.
     connection = sqlite3.connect(path)
@@ -92,7 +92,7 @@ def test_schema_v3_writes_contact_and_upgrades_older_files_in_place(tmp_path):
     practice = connection.execute("SELECT is_practice, practice_round FROM attempts").fetchone()
     connection.close()
     assert rows == {99: 1, attempt_id: 0}  # the old sample keeps the implied "finger down"
-    assert version == "3" and practice == (0, 0)
+    assert version == str(SCHEMA_VERSION) and practice == (0, 0)
 
 
 def test_heat_maps_use_the_recorded_contact_instead_of_guessing(tmp_path):
@@ -112,6 +112,7 @@ def test_heat_maps_use_the_recorded_contact_instead_of_guessing(tmp_path):
     class Forward:
         """Hands the scripted trial's samples and events to the real recorder."""
 
+        set_trial_start = buffer.set_trial_start
         add_sample = buffer.add_sample
         add_event = buffer.add_event
         session_elapsed_us = buffer.session_elapsed_us

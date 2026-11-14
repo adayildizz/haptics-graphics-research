@@ -185,12 +185,15 @@ def draw_feedback(screen: pygame.Surface, correct: bool) -> None:
     screen.blit(text, text.get_rect(center=(width // 2, height // 2)))
 
 
-def draw_break(screen: pygame.Surface, message: str) -> None:
+def draw_break(screen: pygame.Surface, message: str, hint: str | None = None) -> None:
+    """A message screen; ``hint`` replaces the line under it, which by default says how to continue or exit."""
     screen.fill(BACKGROUND)
     font = pygame.font.SysFont("Arial", 30, bold=True)
     subfont = pygame.font.SysFont("Arial", 22)
     text = font.render(message, True, TEXT)
-    hint = subfont.render(f"Press {CONTINUE_LABEL} to continue, or {EXIT_LABEL} to exit.", True, MUTED)
+    if hint is None:
+        hint = f"Press {CONTINUE_LABEL} to continue, or {EXIT_LABEL} to exit."
+    hint_line = subfont.render(hint, True, MUTED)
     screen.blit(text, text.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2 - 24)))
-    screen.blit(hint, hint.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2 + 24)))
+    screen.blit(hint_line, hint_line.get_rect(center=(screen.get_width() // 2, screen.get_height() // 2 + 24)))
     pygame.display.flip()
