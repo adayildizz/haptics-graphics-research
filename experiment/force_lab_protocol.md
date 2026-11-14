@@ -101,8 +101,9 @@ python -m experiment.force_measure --cal FT05411.cal --seconds 60 --label weight
 ```
 
 Önce "eller uzak" der, sonra 60 s canlı yazar. Bu sürede iki ağırlığı ortaya
-ve bir köşeye koyup kaldır. Bizim **Fn** değeri ATI programının **Fz**'siyle
-aynı çıkmalı: aynıysa kalibrasyonu doğru uyguluyoruz.
+ve bir köşeye koyup kaldır. Satırın sonundaki parantezde yazan **Fz**
+(işaretiyle) ATI programının **Fz**'siyle aynı çıkmalı; **Fn** onun yalnızca
+mutlak değeri. Aynıysa kalibrasyonu doğru uyguluyoruz.
 
 ---
 
@@ -143,6 +144,11 @@ python -m experiment.force_measure --cal FT05411.cal --seconds 60 --label ea_sli
 parmağını yüzeyde hafif ve eşit bir baskıyla, sabit hızla ileri geri kaydır;
 bu sırada jeneratörün çıkışını **10 s kapalı, 10 s açık**, üç kez. Çıkış
 açıkken Ft artmalı; EA etkisinin sayılarla ilk görünüşü.
+
+Çıkışın ne zaman açık olduğu dosyaya kendiliğinden yazılmıyor. Bu yüzden
+canlı satırlardaki saniyeye göre değiştir: kayıt **kapalı** başlar,
+**10. saniyede aç, 20.'de kapat, 30.'da aç, 40.'ta kapat, 50.'de aç**. Bir
+geçişi kaçırırsan hangi saniyede yaptığını not et.
 
 Dosya altı gerinim ölçerin gerilimlerini ham olarak saklar (sıfır noktaları
 `_summary.json`'da); teğetsel kuvvetler Fx, Fy, normal kuvvet Fz ve sürtünme
